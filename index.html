@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Stocklyze — Live NSE/BSE Stock Intelligence</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --blu:#1565C0;--blu2:#1877F2;--bluh:#1044A0;
+  --bl:#E3F2FD;--bll:#EFF6FF;--blll:#F0F7FF;
+  --grn:#1B5E20;--grn2:#2E7D32;--gnl:#E8F5E9;
+  --red:#B71C1C;--red2:#C62828;--rdl:#FFEBEE;
+  --amb:#E65100;--aml:#FFF3E0;
+  --pur:#4A148C;--pul:#F3E5F5;
+  --brd:#E5E7EB;--brd2:#D1D5DB;
+  --bg:#F5F6FA;
+  --tx0:#0A0A0A;--tx1:#111827;--tx2:#374151;--tx3:#6B7280;--tx4:#9CA3AF;
+  --ff:'Inter',sans-serif;--fm:'IBM Plex Mono',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--tx1);font-family:var(--ff);font-size:14px;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:var(--brd2);border-radius:3px}
+button,input,select{font-family:var(--ff)}
+input:focus{outline:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.fade{animation:fadeUp .35s ease}
+.spin{animation:spin .75s linear infinite}
+.ticker-scroll{animation:tickerScroll 40s linear infinite}
+.ticker-scroll:hover{animation-play-state:paused}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+//  ⚠️ SET YOUR BACKEND URL HERE (after Railway deploy)
+//  Replace "https://YOUR-APP.up.railway.app" with your actual URL
+//  Steps: 1) Deploy backend.py to Railway
+//         2) Copy your Railway URL
+//         3) Paste it below replacing the placeholder
+// ══════════════════════════════════════════════════════════════
+// Vercel deployment — API is on same domain, no URL change needed!
+// /api/indices, /api/search etc. are served from the same Vercel project
+const API = window.STOCKLYZE_API ||
+  (location.hostname==="localhost"||location.hostname==="127.0.0.1"
+    ? "http://localhost:8000"    // local dev
+    : "");                       // Vercel: same origin, empty = relative URLs
+
+// Verdict color/bg mapping
+const VCOL={
+  "STRONG BUY":"#0D6E36","BUY":"#1B5E20",
+  "CAUTIOUS BUY":"#E65100","HOLD":"#283593",
+  "REDUCE":"#B71C1C","AVOID":"#4A148C"
+};
+const VBGCOL={
+  "STRONG BUY":"#E8F5E9","BUY":"#F1F8E9",
+  "CAUTIOUS BUY":"#FFF3E0","HOLD":"#E8EAF6",
+  "REDUCE":"#FFEBEE","AVOID":"#F3E5F5"
+};
+const vCol=v=>VCOL[v]||"#374151";
+const vBg=v=>VBGCOL[v]||"#F5F6FA";
+
+// Format helpers
+const fmtINR=(v,d=2)=>{
+  if(v==null||isNaN(v)) return "N/A";
+  const a=Math.abs(+v);
+  if(a>=10000000) return "₹"+(a/10000000).toFixed(2)+"Cr";
+  if(a>=100000)   return "₹"+(a/100000).toFixed(2)+"L";
+  return "₹"+a.toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
+};
+const fmtPct=(v,d=2)=>isNaN(v)?"N/A":((+v>=0?"+":"")+(+v).toFixed(d)+"%");
+const fmtBig=v=>{
+  if(!v||isNaN(v)) return "N/A";
+  v=+v;
+  if(v>=1e12) return "₹"+(v/1e12).toFixed(2)+"L Cr";
+  if(v>=1e9)  return "₹"+(v/1e9).toFixed(2)+"K Cr";
+  if(v>=1e7)  return "₹"+(v/1e7).toFixed(2)+" Cr";
+  return "₹"+v.toLocaleString("en-IN");
+};
+
+// API fetch wrapper
+async function apiFetch(path, opts={}){
+  const r = await fetch(API+path, {signal:AbortSignal.timeout(35000), ...opts});
+  if(!r.ok){
+    const e = await r.json().catch(()=>({error:"Network error"}));
+    throw new Error(e.error||e.detail||`HTTP ${r.status}`);
+  }
+  return r.json();
+}
+</script>
+
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback,memo,useMemo}=React;
+
+/* ── LIVE TICKER ──────────────────────────────────────────── */
+const Ticker=memo(function Ticker(){
+  const[items,setItems]=useState([]);
+  const[loaded,setLoaded]=useState(false);
+
+  const load=useCallback(async()=>{
+    try{
+      const d=await apiFetch("/api/indices");
+      if(d&&d.length){setItems(d);setLoaded(true);}
+    }catch(e){console.warn("Ticker:",e);}
+  },[]);
+
+  useEffect(()=>{
+    load();
+    const t=setInterval(load,60000);
+    return()=>clearInterval(t);
+  },[load]);
+
+  if(!loaded) return(
+    <div style={{background:"#fff",borderBottom:"1px solid var(--brd)",height:44,display:"flex",alignItems:"center",padding:"0 20px"}}>
+      <span style={{fontSize:11,color:"var(--tx4)",fontWeight:600}}>Loading live market data...</span>
+    </div>
+  );
+
+  const doubled=[...items,...items];
+  return(
+    <div style={{background:"#fff",borderBottom:"1px solid var(--brd)",overflow:"hidden",height:44,flexShrink:0}}>
+      <div style={{display:"flex",width:"max-content",height:"100%"}} className="ticker-scroll">
+        {doubled.map((d,i)=>(
+          <div key={i} style={{padding:"0 24px",borderRight:"1px solid #F3F4F6",display:"flex",alignItems:"center",gap:12,flexShrink:0,minWidth:220}}>
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:"var(--tx4)",letterSpacing:".05em"}}>{d.name}</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:7,marginTop:1}}>
+                <span style={{fontSize:13,fontWeight:700,fontFamily:"var(--fm)",color:"var(--tx0)"}}>
+                  {(+d.price).toLocaleString("en-IN",{minimumFractionDigits:2})}
+                </span>
+                <span style={{fontSize:11,fontWeight:700,fontFamily:"var(--fm)",color:d.pct>=0?"var(--grn2)":"var(--red2)"}}>
+                  {d.pct>=0?"+":""}{(+d.pct).toFixed(2)}%
+                </span>
+                <span style={{fontSize:10,color:"var(--tx4)"}}>
+                  ({d.change>=0?"+":""}{(+d.change).toFixed(2)})
+                </span>
+              </div>
+            </div>
+          </div>
+        ))}
+        <div style={{padding:"0 16px",display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
+          <span style={{width:6,height:6,borderRadius:"50%",background:"var(--grn2)",display:"inline-block",animation:"pulse 2s infinite"}}/>
+          <span style={{fontSize:9,color:"var(--tx4)",fontWeight:700}}>NSE · BSE · LIVE</span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/* ── NAVBAR ────────────────────────────────────────────────── */
+const Navbar=({onBack,showBack})=>(
+  <nav style={{background:"#fff",borderBottom:"1px solid var(--brd)",height:50,padding:"0 20px",display:"flex",alignItems:"center",gap:14,flexShrink:0,boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
+    <div onClick={showBack?onBack:undefined} style={{display:"flex",alignItems:"center",gap:9,cursor:showBack?"pointer":"default"}}>
+      <div style={{width:30,height:30,background:"var(--blu2)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:15,fontFamily:"var(--fm)"}}>S</div>
+      <span style={{fontSize:16,fontWeight:800,color:"var(--tx0)",letterSpacing:"-.4px"}}>Stock<span style={{color:"var(--blu2)"}}>lyze</span></span>
+    </div>
+    {showBack&&<button onClick={onBack} style={{marginLeft:8,background:"transparent",border:"1px solid var(--brd)",borderRadius:6,padding:"5px 14px",color:"var(--tx3)",fontSize:12,fontWeight:600,cursor:"pointer"}}
+      onMouseOver={e=>{e.currentTarget.style.borderColor="var(--blu2)";e.currentTarget.style.color="var(--blu2)"}}
+      onMouseOut={e=>{e.currentTarget.style.borderColor="var(--brd)";e.currentTarget.style.color="var(--tx3)"}}>
+      ← New Search
+    </button>}
+    <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+      <span style={{fontSize:9,color:"var(--tx4)",fontWeight:600}}>🔒 Private · Research Only</span>
+    </div>
+  </nav>
+);
+
+/* ── TRENDING SECTION ──────────────────────────────────────── */
+function TrendingSection({onSearch}){
+  const[data,setData]=useState(null);
+  const[tab,setTab]=useState("gainers");
+  const[loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    apiFetch("/api/trending")
+      .then(d=>{setData(d);setLoading(false);})
+      .catch(()=>setLoading(false));
+  },[]);
+
+  if(loading) return(
+    <div style={{padding:"20px 0",textAlign:"center"}}>
+      <div style={{display:"inline-block",width:24,height:24,border:"2.5px solid var(--brd)",borderTopColor:"var(--blu2)",borderRadius:"50%"}} className="spin"/>
+      <div style={{fontSize:11,color:"var(--tx4)",marginTop:8}}>Loading live market data...</div>
+    </div>
+  );
+  if(!data) return null;
+
+  const list=data[tab]||[];
+  const tabStyle=(t)=>({
+    padding:"5px 14px",borderRadius:6,border:"1.5px solid",fontSize:11,fontWeight:700,cursor:"pointer",transition:"all .15s",
+    borderColor:tab===t?"var(--blu2)":"var(--brd)",
+    background:tab===t?"var(--blu2)":"#fff",
+    color:tab===t?"#fff":"var(--tx3)"
+  });
+
+  return(
+    <div style={{marginTop:28,width:"100%",maxWidth:700,marginLeft:"auto",marginRight:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+        <span style={{fontSize:11,fontWeight:700,color:"var(--tx3)",textTransform:"uppercase",letterSpacing:".07em"}}>
+          📊 Live Market Activity
+        </span>
+        <div style={{display:"flex",gap:5}}>
+          <button style={tabStyle("gainers")} onClick={()=>setTab("gainers")}>Top Gainers</button>
+          <button style={tabStyle("losers")} onClick={()=>setTab("losers")}>Top Losers</button>
+          <button style={tabStyle("active")} onClick={()=>setTab("active")}>Most Active</button>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
+        {list.slice(0,10).map(s=>(
+          <button key={s.sym} onClick={()=>onSearch(s.sym)}
+            style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:10,padding:"10px 10px 8px",cursor:"pointer",textAlign:"left",transition:"all .15s"}}
+            onMouseOver={e=>{e.currentTarget.style.borderColor="var(--blu2)";e.currentTarget.style.boxShadow="0 2px 8px rgba(24,119,242,.1)"}}
+            onMouseOut={e=>{e.currentTarget.style.borderColor="var(--brd)";e.currentTarget.style.boxShadow="none"}}>
+            <div style={{fontSize:11,fontWeight:700,fontFamily:"var(--fm)",color:"var(--tx0)",marginBottom:2}}>{s.sym}</div>
+            <div style={{fontSize:12,fontWeight:700,fontFamily:"var(--fm)",color:"var(--tx1)",marginBottom:2}}>
+              ₹{(+s.price).toLocaleString("en-IN",{minimumFractionDigits:2})}
+            </div>
+            <div style={{fontSize:11,fontWeight:700,color:s.pct>=0?"var(--grn2)":"var(--red2)"}}>
+              {s.pct>=0?"▲":"▼"} {Math.abs(+s.pct).toFixed(2)}%
+            </div>
+          </button>
+        ))}
+      </div>
+      <div style={{fontSize:10,color:"var(--tx4)",textAlign:"center",marginTop:8}}>
+        Live data from NSE · Click any stock to analyse · Auto-refreshes every 5 minutes
+      </div>
+    </div>
+  );
+}
+
+/* ── HOME PAGE ─────────────────────────────────────────────── */
+function HomePage({onSearch}){
+  const[q,setQ]=useState("");
+  const[results,setResults]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[showDrop,setShowDrop]=useState(false);
+  const[err,setErr]=useState("");
+  const inpRef=useRef(null);
+  const debounceRef=useRef(null);
+
+  useEffect(()=>{inpRef.current?.focus();},[]);
+
+  // Live search via backend — no hardcoded list
+  const doSearch=useCallback(async(v)=>{
+    if(!v||v.trim().length<1){setResults([]);setShowDrop(false);return;}
+    setLoading(true);
+    try{
+      const d=await apiFetch(`/api/search?q=${encodeURIComponent(v)}`);
+      setResults(d||[]);
+      setShowDrop(true);
+    }catch{setResults([]);}
+    setLoading(false);
+  },[]);
+
+  const handleChange=(e)=>{
+    const v=e.target.value;
+    setQ(v);setErr("");
+    clearTimeout(debounceRef.current);
+    debounceRef.current=setTimeout(()=>doSearch(v),300);
+  };
+
+  const go=(sym)=>{
+    setErr("");setQ("");setShowDrop(false);setResults([]);
+    onSearch(sym.toUpperCase().trim());
+  };
+
+  const submit=()=>{
+    const v=q.trim();
+    if(!v){setErr("Type a stock name or symbol");return;}
+    if(results.length>0) go(results[0].sym);
+    else go(v.toUpperCase());
+  };
+
+  const secBadge=(sec)=>{
+    const m={
+      "Technology":{bg:"#EFF6FF",col:"#1565C0"},
+      "Financial Services":{bg:"#F0FDF4",col:"#1B5E20"},
+      "Energy":{bg:"#FFF3E0",col:"#E65100"},
+      "Healthcare":{bg:"#F3E5F5",col:"#4A148C"},
+      "Consumer Cyclical":{bg:"#FCE4EC",col:"#880E4F"},
+      "Consumer Defensive":{bg:"#FCE4EC",col:"#880E4F"},
+      "Industrials":{bg:"#E8EAF6",col:"#283593"},
+      "Basic Materials":{bg:"#F9FBE7",col:"#558B2F"},
+    };
+    return m[sec]||{bg:"#F5F5F5",col:"#555"};
+  };
+
+  return(
+    <div style={{flex:1,overflowY:"auto",background:"#fff"}}>
+      <div style={{maxWidth:720,margin:"0 auto",padding:"48px 20px 40px",textAlign:"center"}}>
+
+        <div style={{display:"inline-flex",alignItems:"center",gap:7,background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:20,padding:"4px 14px",marginBottom:16}}>
+          <span style={{fontSize:11,fontWeight:700,color:"#1565C0"}}>🔒 Private Research Tool</span>
+        </div>
+
+        <h1 style={{fontSize:30,fontWeight:800,color:"#0A0A0A",letterSpacing:"-1px",marginBottom:10,lineHeight:1.25}}>
+          <span style={{color:"#1877F2"}}>Stock Intelligence</span><br/>for Indian Markets
+        </h1>
+        <p style={{fontSize:13,color:"#6B7280",lineHeight:1.8,margin:"0 auto 30px",maxWidth:480}}>
+          Search any NSE/BSE SEBI-registered stock — live data, 4-layer analysis, AI research.
+          <br/>All data is live from Yahoo Finance. No hardcoded values.
+        </p>
+
+        {/* SEARCH */}
+        <div style={{position:"relative",marginBottom:12}}
+          onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget)){setTimeout(()=>setShowDrop(false),150);}}}>
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none"
+            style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",zIndex:2}}>
+            <path d="M9 17A8 8 0 1 0 9 1a8 8 0 0 0 0 16z" stroke="#9CA3AF" strokeWidth="2"/>
+            <path d="m19 19-4.35-4.35" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          {loading&&<div className="spin" style={{position:"absolute",right:130,top:"50%",marginTop:-8,width:16,height:16,border:"2px solid var(--brd)",borderTopColor:"var(--blu2)",borderRadius:"50%"}}/>}
+          <input ref={inpRef} value={q} onChange={handleChange}
+            onKeyDown={e=>{
+              if(e.key==="Enter") submit();
+              if(e.key==="Escape"){setShowDrop(false);setQ("");}
+            }}
+            onFocus={()=>q.trim()&&setShowDrop(true)}
+            placeholder="Search: Reliance, HDFC Bank, TCS, Zomato, Adani..."
+            style={{width:"100%",padding:"14px 130px 14px 40px",border:"1.5px solid #E5E7EB",borderRadius:10,fontSize:14,color:"#111827",background:"#fff",boxShadow:"0 2px 12px rgba(0,0,0,.07)",transition:"all .15s"}}
+            onFocus2={e=>{e.target.style.borderColor="#1877F2";e.target.style.boxShadow="0 0 0 3px rgba(24,119,242,.1)"}}
+            onBlur={e=>{e.target.style.borderColor="#E5E7EB";e.target.style.boxShadow="0 2px 12px rgba(0,0,0,.07)"}}
+          />
+          <button onClick={submit}
+            style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",background:"#1877F2",border:"none",borderRadius:7,padding:"7px 20px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",transition:"background .15s"}}
+            onMouseOver={e=>e.currentTarget.style.background="#1044A0"}
+            onMouseOut={e=>e.currentTarget.style.background="#1877F2"}>
+            Analyse →
+          </button>
+
+          {/* DROPDOWN */}
+          {showDrop&&results.length>0&&(
+            <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,right:0,background:"#fff",border:"1px solid #E5E7EB",borderRadius:12,boxShadow:"0 8px 30px rgba(0,0,0,.12)",zIndex:300,overflow:"hidden",textAlign:"left",maxHeight:380,overflowY:"auto"}}>
+              <div style={{padding:"7px 14px 5px",fontSize:10,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",letterSpacing:".07em",borderBottom:"1px solid #F3F4F6"}}>
+                {results.length} result{results.length!==1?"s":""} — click to analyse
+              </div>
+              {results.map((s,i)=>{
+                const sc=secBadge(s.sector);
+                return(
+                  <div key={s.sym+i} onMouseDown={()=>go(s.sym)}
+                    style={{padding:"10px 14px",cursor:"pointer",display:"flex",alignItems:"center",gap:12,borderBottom:"1px solid #F9FAFB",transition:"background .1s"}}
+                    onMouseOver={e=>e.currentTarget.style.background="#EFF6FF"}
+                    onMouseOut={e=>e.currentTarget.style.background="#fff"}>
+                    <div style={{minWidth:92,background:"#F3F4F6",borderRadius:5,padding:"4px 8px",textAlign:"center"}}>
+                      <span style={{fontSize:12,fontWeight:700,fontFamily:"IBM Plex Mono",color:"#111827"}}>{s.sym}</span>
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600,color:"#111827",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name||s.sym}</div>
+                      <div style={{fontSize:10,color:"#9CA3AF",marginTop:1}}>{s.sector||s.exchange||"NSE"}</div>
+                    </div>
+                    <span style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:8,background:sc.bg,color:sc.col,whiteSpace:"nowrap",flexShrink:0}}>
+                      {s.exchange||"NSE"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {showDrop&&results.length===0&&q.trim().length>1&&!loading&&(
+            <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,right:0,background:"#fff",border:"1px solid #E5E7EB",borderRadius:12,boxShadow:"0 8px 30px rgba(0,0,0,.12)",zIndex:300,padding:"14px",textAlign:"center"}}>
+              <div style={{fontSize:12,color:"var(--tx3)"}}>No results for "{q}" — press Enter to try direct analysis</div>
+              <div style={{fontSize:11,color:"var(--tx4)",marginTop:4}}>Works with any NSE/BSE SEBI-registered symbol</div>
+            </div>
+          )}
+        </div>
+
+        {err&&<p style={{color:"#C62828",fontSize:12,marginBottom:12}}>{err}</p>}
+
+        {/* LIVE TRENDING */}
+        <TrendingSection onSearch={onSearch}/>
+
+        <p style={{fontSize:11,color:"#9CA3AF",marginTop:24,lineHeight:1.8}}>
+          All NSE/BSE stocks · Powered by Yahoo Finance + Groq AI<br/>
+          Live data · Auto-updating · No manual intervention needed<br/>
+          <strong>For private research use only</strong>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ── CANDLESTICK CHART ──────────────────────────────────────── */
+function CandleChart({sym,seriesData}){
+  const wrapRef=useRef(null);
+  const chartRef=useRef(null);
+  const csRef=useRef(null);
+  const volRef=useRef(null);
+  const[period,setPeriod]=useState("6m");
+  const PERIODS=[["1M","1m"],["3M","3m"],["6M","6m"],["1Y","1y"]];
+  const pDays={"1m":22,"3m":66,"6m":130,"1y":252};
+
+  useEffect(()=>{
+    if(!wrapRef.current) return;
+    const chart=LightweightCharts.createChart(wrapRef.current,{
+      width:wrapRef.current.clientWidth,height:320,
+      layout:{background:{color:"#fff"},textColor:"#6B7280",fontFamily:"IBM Plex Mono",fontSize:10},
+      grid:{vertLines:{color:"#F3F4F6"},horzLines:{color:"#F3F4F6"}},
+      crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+      rightPriceScale:{borderColor:"#E5E7EB"},
+      timeScale:{borderColor:"#E5E7EB",timeVisible:true,secondsVisible:false,fixLeftEdge:true,fixRightEdge:true},
+    });
+    chartRef.current=chart;
+    const cs=chart.addCandlestickSeries({
+      upColor:"#1B5E20",downColor:"#B71C1C",
+      borderUpColor:"#1B5E20",borderDownColor:"#B71C1C",
+      wickUpColor:"#1B5E20",wickDownColor:"#B71C1C"
+    });
+    csRef.current=cs;
+    const vs=chart.addHistogramSeries({priceFormat:{type:"volume"},priceScaleId:"vol"});
+    chart.priceScale("vol").applyOptions({scaleMargins:{top:0.82,bottom:0}});
+    volRef.current=vs;
+    const ro=new ResizeObserver(()=>{if(wrapRef.current)chart.applyOptions({width:wrapRef.current.clientWidth});});
+    ro.observe(wrapRef.current);
+    return()=>{ro.disconnect();chart.remove();};
+  },[]);
+
+  useEffect(()=>{
+    if(!csRef.current||!seriesData?.length) return;
+    const n=pDays[period]||252;
+    const slice=seriesData.slice(-n);
+    if(!slice.length) return;
+    csRef.current.setData(slice);
+    volRef.current.setData(slice.map(d=>({time:d.time,value:d.volume,color:d.close>=d.open?"rgba(27,94,32,.3)":"rgba(183,28,28,.3)"})));
+    chartRef.current.timeScale().fitContent();
+  },[seriesData,period]);
+
+  return(
+    <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"14px 16px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <span style={{fontSize:10,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".08em"}}>
+          Live Candlestick Chart — {sym} (NSE/BSE)
+        </span>
+        <div style={{display:"flex",gap:3}}>
+          {PERIODS.map(([l,v])=>(
+            <button key={v} onClick={()=>setPeriod(v)}
+              style={{padding:"3px 9px",borderRadius:5,border:"1.5px solid",
+                borderColor:period===v?"var(--blu2)":"var(--brd)",
+                background:period===v?"var(--blu2)":"#fff",
+                color:period===v?"#fff":"var(--tx3)",
+                fontSize:10,fontWeight:700,cursor:"pointer",transition:"all .15s"}}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div ref={wrapRef} style={{height:320}}/>
+    </div>
+  );
+}
+
+/* ── CALCULATOR ─────────────────────────────────────────────── */
+function Calculator({price,series,forecasts}){
+  const[amt,setAmt]=useState(10000);
+  const[mode,setMode]=useState("past");
+  const[per,setPer]=useState("1y");
+  const[res,setRes]=useState(null);
+  const P={"1m":22,"3m":66,"6m":130,"1y":252};
+  const FL={"1m":"1 Month","3m":"3 Months","6m":"6 Months","1y":"12 Months"};
+
+  const go=()=>{
+    if(!amt||amt<=0){setRes({err:"Enter a valid amount"});return;}
+    if(mode==="past"){
+      const data=series||[];const days=P[per]||252;
+      const idx=Math.max(0,data.length-1-days);
+      const oldP=data[idx]?.close;
+      if(!oldP){setRes({err:"Not enough historical data"});return;}
+      const shares=amt/oldP,curVal=shares*price,profit=curVal-amt,roi=(profit/amt)*100;
+      const yrs=(data.length-1-idx)/252;
+      const cagr=(Math.pow(curVal/amt,1/Math.max(yrs,0.1))-1)*100;
+      setRes({type:"past",shares,oldP,oldDate:data[idx].time,curVal,profit,roi,cagr});
+    }else{
+      const fc=forecasts?.find(f=>f.period===FL[per]);
+      if(!fc){setRes({err:"Forecast not available"});return;}
+      const shares=amt/price;
+      setRes({type:"future",period:FL[per],shares,
+        baseV:+(shares*fc.base).toFixed(2),bullV:+(shares*fc.bull).toFixed(2),bearV:+(shares*fc.bear).toFixed(2),
+        basePct:fc.chg,
+        baseP:+(shares*fc.base-amt).toFixed(2),bullP:+(shares*fc.bull-amt).toFixed(2),bearP:+(shares*fc.bear-amt).toFixed(2),
+      });
+    }
+  };
+
+  const RC=({label,val,sub,col})=>(
+    <div style={{background:"rgba(255,255,255,.6)",borderRadius:8,padding:"10px 12px"}}>
+      <div style={{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:".07em",color:"var(--tx4)",marginBottom:4}}>{label}</div>
+      <div style={{fontSize:17,fontWeight:700,fontFamily:"var(--fm)",color:col||"var(--tx1)",lineHeight:1.2}}>{val}</div>
+      {sub&&<div style={{fontSize:10,color:"var(--tx4)",marginTop:3}}>{sub}</div>}
+    </div>
+  );
+
+  return(
+    <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"16px 18px"}}>
+      <div style={{fontSize:10,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".09em",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+        Investment Calculator<div style={{flex:1,height:1,background:"var(--brd)"}}/>
+      </div>
+      <div style={{display:"flex",background:"#F3F4F6",borderRadius:7,padding:3,marginBottom:16,width:"fit-content",gap:2}}>
+        {[["Past Return","past"],["Future Projection","future"]].map(([l,v])=>(
+          <button key={v} onClick={()=>{setMode(v);setRes(null);}}
+            style={{padding:"6px 16px",borderRadius:5,border:"none",fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .15s",
+              background:mode===v?"#fff":"transparent",color:mode===v?"var(--tx1)":"var(--tx3)",
+              boxShadow:mode===v?"0 1px 4px rgba(0,0,0,.1)":"none"}}>{l}</button>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap",marginBottom:14}}>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          <label style={{fontSize:10,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".06em"}}>Amount (₹)</label>
+          <div style={{position:"relative"}}>
+            <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"var(--tx3)",fontFamily:"var(--fm)",fontSize:13}}>₹</span>
+            <input type="number" value={amt} min="1"
+              onChange={e=>setAmt(parseFloat(e.target.value)||0)}
+              onKeyDown={e=>e.key==="Enter"&&go()}
+              style={{padding:"8px 10px 8px 26px",border:"1.5px solid var(--brd)",borderRadius:7,fontSize:13,fontFamily:"var(--fm)",color:"var(--tx1)",width:140,background:"#FAFAFA",transition:"border .15s"}}
+              onFocus={e=>e.target.style.borderColor="var(--blu2)"}
+              onBlur={e=>e.target.style.borderColor="var(--brd)"}
+            />
+          </div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          <label style={{fontSize:10,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".06em"}}>
+            {mode==="past"?"Invested":"Project For"}
+          </label>
+          <div style={{display:"flex",gap:4}}>
+            {[["1M","1m"],["3M","3m"],["6M","6m"],["1Y","1y"]].map(([l,v])=>(
+              <button key={v} onClick={()=>{setPer(v);setRes(null);}}
+                style={{padding:"7px 11px",borderRadius:6,border:"1.5px solid",cursor:"pointer",fontSize:11,fontWeight:600,transition:"all .15s",
+                  borderColor:per===v?"var(--blu2)":"var(--brd)",
+                  background:per===v?"var(--bl)":"#fff",
+                  color:per===v?"var(--blu2)":"var(--tx3)"}}>
+                {l}{mode==="past"?" ago":""}</button>
+            ))}
+          </div>
+        </div>
+        <button onClick={go}
+          style={{padding:"9px 22px",background:"var(--blu2)",border:"none",borderRadius:7,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",transition:"background .15s"}}
+          onMouseOver={e=>e.currentTarget.style.background="var(--bluh)"}
+          onMouseOut={e=>e.currentTarget.style.background="var(--blu2)"}>
+          Calculate →
+        </button>
+      </div>
+      {res&&!res.err&&res.type==="past"&&(
+        <div className="fade" style={{background:res.profit>=0?"var(--gnl)":"var(--rdl)",border:`1px solid ${res.profit>=0?"#A5D6A7":"#EF9A9A"}`,borderRadius:10,padding:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+            <RC label="Invested" val={fmtINR(amt,0)} sub={`Bought @ ${fmtINR(res.oldP)} on ${res.oldDate}`}/>
+            <RC label="Current Value" val={fmtINR(res.curVal,0)} sub={`${res.shares.toFixed(4)} shares @ ${fmtINR(price)}`}/>
+            <RC label="Profit / Loss" val={(res.profit>=0?"+":"")+fmtINR(res.profit,0)} sub={fmtPct(res.roi)+" total"} col={res.profit>=0?"var(--grn)":"var(--red)"}/>
+            <RC label="CAGR" val={fmtPct(res.cagr)+" p.a."} sub="Annualised return" col={res.cagr>=0?"var(--grn)":"var(--red)"}/>
+          </div>
+          <p style={{fontSize:10,color:"var(--tx4)",marginTop:8,fontStyle:"italic"}}>* Actual NSE/BSE historical closing prices. Past returns ≠ future performance.</p>
+        </div>
+      )}
+      {res&&!res.err&&res.type==="future"&&(
+        <div className="fade" style={{background:"var(--blll)",border:"1px solid #BFDBFE",borderRadius:10,padding:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+            <RC label="Bull Case" val={fmtINR(res.bullV,0)} sub={(res.bullP>=0?"+":"")+fmtINR(res.bullP,0)+" projected"} col="var(--grn)"/>
+            <RC label="Base Case" val={fmtINR(res.baseV,0)} sub={fmtPct(res.basePct)+" projected"} col="var(--blu2)"/>
+            <RC label="Bear Case" val={fmtINR(res.bearV,0)} sub={(res.bearP>=0?"+":"")+fmtINR(res.bearP,0)+" projected"} col="var(--red)"/>
+          </div>
+          <p style={{fontSize:10,color:"var(--tx4)",marginTop:8,fontStyle:"italic"}}>⚠ Statistical projections — NOT guaranteed returns.</p>
+        </div>
+      )}
+      {res?.err&&<div style={{color:"var(--red2)",fontSize:12,marginTop:10,padding:"7px 11px",background:"var(--rdl)",borderRadius:7}}>{res.err}</div>}
+    </div>
+  );
+}
+
+/* ── TECHNICAL SECTION ──────────────────────────────────────── */
+function TechSection({d}){
+  if(!d) return null;
+  const Gauge=({label,val,min,max,bullGte,midGte})=>{
+    const pct=Math.max(0,Math.min(100,(val-min)/(max-min)*100));
+    const col=val>=bullGte?"var(--grn)":val>=midGte?"var(--amb)":"var(--red)";
+    const sig=val>=bullGte?"Bullish":val>=midGte?"Neutral":"Bearish";
+    return(
+      <div style={{background:"#FAFAFA",border:"1px solid var(--brd)",borderRadius:8,padding:"10px 12px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+          <span style={{fontSize:11,fontWeight:600,color:"var(--tx2)"}}>{label}</span>
+          <span style={{fontSize:13,fontWeight:700,fontFamily:"var(--fm)",color:col}}>{typeof val==="number"?val.toFixed(1):val}</span>
+        </div>
+        <div style={{height:4,background:"var(--brd)",borderRadius:3,overflow:"hidden",marginBottom:4}}>
+          <div style={{width:pct+"%",height:"100%",background:col,borderRadius:3,transition:"width .6s"}}/>
+        </div>
+        <span style={{fontSize:10,fontWeight:700,color:col,letterSpacing:".04em"}}>{sig}</span>
+      </div>
+    );
+  };
+  const Row=({k,v,col})=>(
+    <div style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #F3F4F6"}}>
+      <span style={{fontSize:12,color:"var(--tx3)"}}>{k}</span>
+      <span style={{fontSize:12,fontWeight:700,fontFamily:"var(--fm)",color:col||"var(--tx1)"}}>{v}</span>
+    </div>
+  );
+  const sc=s=>s==="Bullish"||s==="Strong"?"var(--grn)":s==="Bearish"||s==="Weak"?"var(--red)":"var(--amb)";
+  return(
+    <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"16px 18px"}}>
+      <div style={{fontSize:10,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".09em",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+        Technical Analysis<div style={{flex:1,height:1,background:"var(--brd)"}}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+        <Gauge label="RSI (14)"   val={d.rsi}         min={0}  max={100} bullGte={45} midGte={30}/>
+        <Gauge label="ADX"        val={d.adx}         min={0}  max={60}  bullGte={25} midGte={20}/>
+        <Gauge label="Stoch %K"   val={d.stoch?.k||50}min={0}  max={100} bullGte={35} midGte={20}/>
+        <Gauge label="BB %B"      val={d.bb?.pct||50} min={0}  max={100} bullGte={30} midGte={20}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div>
+          <div style={{fontSize:9,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Oscillators</div>
+          <Row k="RSI (14)"       v={d.rsi?.toFixed(1)||"N/A"}        col={d.rsi<30?"var(--grn)":d.rsi>70?"var(--red)":"var(--amb)"}/>
+          <Row k="RSI Signal"     v={d.rsi_signal||"—"}               col={d.rsi_signal==="Oversold"?"var(--grn)":d.rsi_signal==="Overbought"?"var(--red)":"var(--amb)"}/>
+          <Row k="MACD Line"      v={d.macd?.macd?.toFixed(3)||"N/A"} col={d.macd?.hist>0?"var(--grn)":"var(--red)"}/>
+          <Row k="MACD Signal"    v={d.macd?.signal?.toFixed(3)||"N/A"}/>
+          <Row k="MACD Histogram" v={d.macd?.hist?.toFixed(3)||"N/A"} col={d.macd?.hist>0?"var(--grn)":"var(--red)"}/>
+          <Row k="ADX Strength"   v={d.adx_strength||"—"}             col={sc(d.adx_strength)}/>
+          <Row k="Stoch %K"       v={d.stoch?.k?.toFixed(1)||"N/A"}   col={d.stoch?.k<20?"var(--grn)":d.stoch?.k>80?"var(--red)":"var(--amb)"}/>
+          <Row k="BB Bandwidth"   v={(d.bb?.bw||0).toFixed(2)+"%"}/>
+        </div>
+        <div>
+          <div style={{fontSize:9,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Moving Averages</div>
+          <Row k="EMA 20"  v={fmtINR(d.ema20)}  col={d.ema20>0&&d.ema20<d.price?"var(--grn)":"var(--red)"}/>
+          <Row k="EMA 50"  v={fmtINR(d.ema50)}  col={d.ema50>0&&d.ema50<d.price?"var(--grn)":"var(--red)"}/>
+          <Row k="EMA 200" v={fmtINR(d.ema200)} col={d.ema200>0&&d.ema200<d.price?"var(--grn)":"var(--red)"}/>
+          <Row k="EMA Trend"   v={d.ema_signal||"—"}  col={sc(d.ema_signal)}/>
+          <Row k="BB Upper"    v={fmtINR(d.bb?.upper)}/>
+          <Row k="BB Mid"      v={fmtINR(d.bb?.mid)}/>
+          <Row k="BB Lower"    v={fmtINR(d.bb?.lower)}/>
+          <Row k="MACD Signal" v={d.macd_signal||"—"} col={sc(d.macd_signal)}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── ANALYSIS PAGE ─────────────────────────────────────────── */
+function AnalysisPage({sym}){
+  const[data,setData]=useState(null);
+  const[status,setStatus]=useState("loading");
+  const[errMsg,setErrMsg]=useState("");
+  const[loadMsg,setLoadMsg]=useState("Fetching live market data from NSE/BSE...");
+
+  useEffect(()=>{
+    setData(null);setStatus("loading");setErrMsg("");
+    const msgs=[
+      "Fetching live market data from NSE/BSE...",
+      "Analysing business fundamentals...",
+      "Computing valuation ratios...",
+      "Running technical indicators...",
+      "Generating AI research report...",
+    ];
+    let mi=0;
+    const ti=setInterval(()=>{mi=Math.min(mi+1,msgs.length-1);setLoadMsg(msgs[mi]);},1500);
+    apiFetch(`/api/analyse?sym=${encodeURIComponent(sym)}`)
+      .then(d=>{clearInterval(ti);setData(d);setStatus("done");})
+      .catch(e=>{clearInterval(ti);setErrMsg(e.message);setStatus("error");});
+    return()=>clearInterval(ti);
+  },[sym]);
+
+  if(status==="loading") return(
+    <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,background:"#fff"}}>
+      <div style={{width:40,height:40,border:"3px solid var(--brd)",borderTopColor:"var(--blu2)",borderRadius:"50%"}} className="spin"/>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:15,fontWeight:700,color:"var(--tx0)",marginBottom:4}}>Analysing {sym}...</div>
+        <div style={{fontSize:12,color:"var(--tx3)"}}>{loadMsg}</div>
+        <div style={{fontSize:11,color:"var(--tx4)",marginTop:4}}>Live data from Yahoo Finance · 15–25 seconds</div>
+      </div>
+    </div>
+  );
+
+  if(status==="error") return(
+    <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"2rem",gap:12}}>
+      <div style={{fontSize:40}}>⚠️</div>
+      <div style={{fontSize:15,fontWeight:700,color:"var(--tx0)",textAlign:"center",maxWidth:460}}>{errMsg}</div>
+      <div style={{fontSize:12,color:"var(--tx3)",textAlign:"center"}}>Check backend is deployed and running correctly.</div>
+    </div>
+  );
+
+  const s=data;
+  const isUp=s.pct>=0;
+  const vc=vCol(s.verdict); const vb=vBg(s.verdict);
+  const peC=s.pe>0&&s.spe>0?(s.pe>s.spe*1.2?"var(--red)":s.pe<s.spe?"var(--grn)":"var(--tx1)"):"var(--tx1)";
+
+  const STitle=({children})=>(
+    <div style={{fontSize:10,fontWeight:700,color:"var(--tx4)",textTransform:"uppercase",letterSpacing:".09em",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+      {children}<div style={{flex:1,height:1,background:"var(--brd)"}}/>
+    </div>
+  );
+  const StatCard=({label,value,sub,col})=>(
+    <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:8,padding:"10px 14px",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+      <div style={{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:".09em",color:"var(--tx4)",marginBottom:5}}>{label}</div>
+      <div style={{fontSize:15,fontWeight:700,fontFamily:"var(--fm)",color:col||"var(--tx1)",lineHeight:1.2}}>{value}</div>
+      {sub&&<div style={{fontSize:10,color:"var(--tx4)",marginTop:3}}>{sub}</div>}
+    </div>
+  );
+  const FRow=({k,v,col})=>(
+    <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #F3F4F6"}}>
+      <span style={{fontSize:12,color:"var(--tx3)"}}>{k}</span>
+      <span style={{fontSize:12,fontWeight:700,fontFamily:"var(--fm)",color:col||"var(--tx1)"}}>{v}</span>
+    </div>
+  );
+
+  return(
+    <div className="fade" style={{flex:1,overflowY:"auto",background:"var(--bg)"}}>
+      {/* Sticky header */}
+      <div style={{background:"#fff",borderBottom:"1px solid var(--brd)",padding:"10px 22px",display:"flex",alignItems:"center",position:"sticky",top:0,zIndex:40,boxShadow:"0 1px 4px rgba(0,0,0,.06)"}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:15,fontWeight:700,color:"var(--tx0)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}</div>
+          <div style={{fontSize:11,color:"var(--tx4)"}}>{s.exchange} · {s.sector} {s.industry?`· ${s.industry}`:""}</div>
+        </div>
+        <div style={{flexShrink:0,textAlign:"right"}}>
+          <div style={{fontSize:22,fontWeight:700,fontFamily:"var(--fm)",color:"var(--tx0)"}}>{fmtINR(s.price)}</div>
+          <div style={{fontSize:12,fontFamily:"var(--fm)",fontWeight:700,color:isUp?"var(--grn2)":"var(--red2)"}}>
+            {isUp?"+":""}{fmtINR(s.change)} ({fmtPct(s.pct)}) today
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:960,margin:"0 auto",padding:"18px 14px 60px"}}>
+        {/* Quick stats */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:14}}>
+          <StatCard label="52W High" value={fmtINR(s.h52,0)} sub={fmtPct((s.price-s.h52)/s.h52*100)+" from high"} col="var(--red)"/>
+          <StatCard label="52W Low"  value={fmtINR(s.l52,0)}  sub={"+"+((s.price-s.l52)/s.l52*100).toFixed(1)+"% from low"} col="var(--grn)"/>
+          <StatCard label="P/E Ratio" value={s.pe?s.pe+"x":"N/A"} sub={s.spe?"Sector: "+s.spe+"x":""} col={peC}/>
+          <StatCard label="Market Cap" value={s.mc_fmt||fmtBig(s.mc)} sub={s.sector}/>
+          <StatCard label="RSI (14)" value={s.rsi?.toFixed(1)||"N/A"} sub={s.rsi_signal} col={s.rsi<30?"var(--grn)":s.rsi>70?"var(--red)":"var(--amb)"}/>
+        </div>
+
+        {/* VERDICT */}
+        <div style={{background:vb,border:`2px solid ${vc}44`,borderRadius:16,padding:22,marginBottom:14,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,gap:12}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:9,fontWeight:700,letterSpacing:".12em",textTransform:"uppercase",color:"var(--tx4)",marginBottom:8}}>
+                FINAL VERDICT — 12-Month Quantitative Analysis
+              </div>
+              <div style={{fontSize:38,fontWeight:800,color:vc,letterSpacing:"-1px",lineHeight:1,marginBottom:8}}>{s.verdict}</div>
+              <div style={{fontSize:12,color:"var(--tx3)",lineHeight:1.7,maxWidth:440}}>
+                4-layer engine: business fundamentals, valuation ratios, technical momentum &amp; institutional ownership. Strict quantitative gates — no human bias.
+              </div>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0}}>
+              <div style={{fontSize:56,fontWeight:800,fontFamily:"var(--fm)",color:vc,lineHeight:1}}>{s.score}</div>
+              <div style={{fontSize:12,color:"var(--tx4)"}}>/100 composite</div>
+              <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
+                {Object.entries(s.breakdown||{}).map(([k,v])=>{
+                  const mx=k==="bh"?30:k==="val"?25:k==="tech"?25:20;
+                  const col=v/mx>=0.7?"var(--grn)":v/mx>=0.45?"var(--amb)":"var(--red)";
+                  const lb=k==="bh"?"BIZ":k==="val"?"VAL":k==="tech"?"TECH":"INST";
+                  return(
+                    <div key={k} style={{textAlign:"center",minWidth:40}}>
+                      <div style={{fontSize:14,fontWeight:800,fontFamily:"var(--fm)",color:col}}>{v}</div>
+                      <div style={{fontSize:8,fontWeight:700,color:"var(--tx4)",letterSpacing:".05em"}}>{lb}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Forecasts */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+            {(s.forecasts||[]).map(f=>(
+              <div key={f.period} style={{background:"rgba(255,255,255,.8)",borderRadius:10,padding:"12px 14px",border:"1px solid rgba(0,0,0,.07)"}}>
+                <div style={{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",color:"var(--tx4)",marginBottom:8}}>{f.period}</div>
+                <div style={{fontSize:12,fontWeight:700,color:"var(--grn)",fontFamily:"var(--fm)",marginBottom:2}}>▲ {fmtINR(f.bull,0)}</div>
+                <div style={{fontSize:17,fontWeight:800,fontFamily:"var(--fm)",color:"var(--blu2)",lineHeight:1.2}}>{fmtINR(f.base,0)}</div>
+                <div style={{fontSize:10,color:"var(--tx4)",margin:"2px 0 4px"}}>{fmtPct(f.chg,1)} base</div>
+                <div style={{fontSize:12,fontWeight:700,color:"var(--red)",fontFamily:"var(--fm)"}}>▼ {fmtINR(f.bear,0)}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:10,color:"var(--tx4)",borderTop:"1px solid rgba(0,0,0,.07)",paddingTop:10}}>
+            ⚠ Forecasts are statistical projections (linear regression). NOT guaranteed returns. Do not base investment decisions solely on these figures.
+          </div>
+        </div>
+
+        {/* Chart */}
+        <div style={{marginBottom:14}}><CandleChart sym={s.sym} seriesData={s.series||[]}/></div>
+
+        {/* Calculator */}
+        <div style={{marginBottom:14}}><Calculator price={s.price} series={s.series||[]} forecasts={s.forecasts||[]}/></div>
+
+        {/* Score breakdown */}
+        <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"18px 20px",marginBottom:14,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+          <STitle>Analysis Score Breakdown</STitle>
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            {[
+              ["Business Health",    s.breakdown?.bh,   30,"Revenue · margins · ROE · debt · earnings growth"],
+              ["Valuation",          s.breakdown?.val,  25,"P/E vs sector · P/B ratio"],
+              ["Technical Momentum", s.breakdown?.tech, 25,"200-day EMA · golden cross · RSI · MACD · ADX"],
+              ["Institutional",      s.breakdown?.inst, 20,"Institutional % · insider/promoter % · beta"],
+            ].map(([lbl,sc,mx,sub])=>{
+              const pct=sc!=null?(sc/mx)*100:0;
+              const col=pct>=70?"var(--grn)":pct>=45?"var(--amb)":"var(--red)";
+              return(
+                <div key={lbl} style={{display:"grid",gridTemplateColumns:"1fr 70px",gap:14,alignItems:"center"}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,color:"var(--tx1)",marginBottom:2}}>{lbl}</div>
+                    <div style={{fontSize:10,color:"var(--tx4)",marginBottom:7}}>{sub}</div>
+                    <div style={{height:5,background:"var(--brd)",borderRadius:3,overflow:"hidden"}}>
+                      <div style={{width:pct+"%",height:"100%",background:col,borderRadius:3,transition:"width .7s ease"}}/>
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right",fontSize:22,fontWeight:800,fontFamily:"var(--fm)",color:col}}>
+                    {sc??0}<span style={{fontSize:11,fontWeight:400,color:"var(--tx4)"}}>/{mx}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Technical */}
+        <div style={{marginBottom:14}}>
+          <TechSection d={{...s,price:s.price}}/>
+        </div>
+
+        {/* Key Findings */}
+        <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"18px 20px",marginBottom:14,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+          <STitle>Key Findings</STitle>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+            {(s.findings||[]).map((f,i)=>{
+              const bg=f.t==="p"?"#F0FDF4":f.t==="n"?"#FEF2F2":"#FFFBEB";
+              const ic=f.t==="p"?"✓":f.t==="n"?"✗":"◆";
+              const col=f.t==="p"?"#0D6E36":f.t==="n"?"#B71C1C":"#E65100";
+              return(
+                <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start",background:bg,padding:"10px 14px",borderRadius:8}}>
+                  <span style={{fontWeight:800,fontSize:14,color:col,flexShrink:0,marginTop:1}}>{ic}</span>
+                  <span style={{fontSize:13,color:"var(--tx1)",lineHeight:1.65}}>{f.tx}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Company description */}
+          {s.description&&(
+            <div style={{background:"var(--blll)",border:"1px solid #BFDBFE",borderRadius:8,padding:"12px 14px"}}>
+              <div style={{fontSize:10,fontWeight:700,color:"var(--blu2)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:6}}>Company Overview</div>
+              <div style={{fontSize:12,color:"var(--tx2)",lineHeight:1.8}}>{s.description}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Financials + Ownership */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+          <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+            <STitle>Financials</STitle>
+            <FRow k="Revenue Growth (YoY)" v={fmtPct(s.rg)} col={s.rg>0?"var(--grn)":"var(--red)"}/>
+            <FRow k="Earnings Growth"      v={fmtPct(s.eg)} col={s.eg>0?"var(--grn)":"var(--red)"}/>
+            <FRow k="Profit Margin"        v={s.pm!=null?s.pm.toFixed(1)+"%":"N/A"} col={s.pm>12?"var(--grn)":s.pm>5?"var(--amb)":"var(--red)"}/>
+            <FRow k="Operating Margin"     v={s.op_margin!=null?s.op_margin.toFixed(1)+"%":"N/A"}/>
+            <FRow k="Return on Equity"     v={s.roe!=null?s.roe.toFixed(1)+"%":"N/A"} col={s.roe>20?"var(--grn)":s.roe>12?"var(--amb)":"var(--red)"}/>
+            <FRow k="Return on Assets"     v={s.roa!=null?s.roa.toFixed(1)+"%":"N/A"}/>
+            <FRow k="Debt / Equity"        v={s.de!=null?(s.de<0.01?"Zero Debt":s.de.toFixed(2)+"x"):"N/A"} col={s.de<0.01?"var(--grn)":s.de>1.5?"var(--red)":"var(--tx1)"}/>
+            <FRow k="P/E Ratio"            v={s.pe?s.pe+"x":"N/A"} col={peC}/>
+            <FRow k="P/B Ratio"            v={s.pb?s.pb+"x":"N/A"}/>
+            <FRow k="EPS (TTM)"            v={s.eps?fmtINR(s.eps):"N/A"}/>
+            <FRow k="Dividend Yield"       v={s.div_yield>0?s.div_yield.toFixed(2)+"%":"Nil"}/>
+          </div>
+          <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"16px 18px",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+            <STitle>Ownership &amp; Market</STitle>
+            <FRow k="Institutional Holding" v={s.inst!=null?s.inst.toFixed(1)+"%":"N/A"} col={s.inst>30?"var(--grn)":"var(--tx1)"}/>
+            <FRow k="Promoter / Insider"    v={s.insiders!=null?s.insiders.toFixed(1)+"%":"N/A"}/>
+            <FRow k="Market Cap"            v={s.mc_fmt||fmtBig(s.mc)}/>
+            <FRow k="Beta"                  v={s.beta?.toFixed(2)||"N/A"} col={s.beta<0.8?"var(--grn)":s.beta>1.5?"var(--red)":"var(--tx1)"}/>
+            <FRow k="Sector"                v={s.sector||"N/A"}/>
+            <FRow k="Today Open"            v={fmtINR(s.open)}/>
+            <FRow k="Today High"            v={fmtINR(s.high)} col="var(--grn)"/>
+            <FRow k="Today Low"             v={fmtINR(s.low)}  col="var(--red)"/>
+            <FRow k="Volume"                v={(s.vol||0).toLocaleString("en-IN")}/>
+            <FRow k="50-Day MA"             v={fmtINR(s.ma50)}/>
+            <FRow k="200-Day MA"            v={fmtINR(s.ma200)}/>
+            {s.target_price&&<FRow k="Analyst Target"  v={fmtINR(s.target_price)} col="var(--blu2)"/>}
+            {s.analyst_count>0&&<FRow k="Analyst Count" v={s.analyst_count+" analysts"}/>}
+          </div>
+        </div>
+
+        {/* Groq AI Analysis */}
+        {s.groq_text&&(
+          <div style={{background:"#fff",border:"1px solid var(--brd)",borderRadius:12,padding:"18px 20px",marginBottom:14,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+            <STitle>AI Research Report <span style={{fontSize:9,background:"#EFF6FF",color:"#1565C0",padding:"2px 8px",borderRadius:10,marginLeft:8,fontWeight:700}}>Powered by Groq AI</span></STitle>
+            <div style={{fontSize:13,color:"var(--tx2)",lineHeight:1.9,whiteSpace:"pre-line"}}>{s.groq_text}</div>
+          </div>
+        )}
+
+        {/* Disclaimer */}
+        <div style={{background:"#FFFDE7",border:"1px solid #FBC02D",borderRadius:12,padding:"16px 20px",marginBottom:6}}>
+          <div style={{fontSize:12,fontWeight:800,color:"#E65100",marginBottom:8}}>⚠ IMPORTANT LEGAL DISCLAIMER</div>
+          <p style={{fontSize:11,color:"#6D4C1F",lineHeight:1.9}}>
+            <strong>Stocklyze is a quantitative research tool</strong> designed for qualified brokers and analysts.
+            All analysis, scores, verdicts, and forecasts are generated by mathematical algorithms on live market data.
+            <br/><br/>
+            <strong>This output does NOT constitute financial advice</strong>, a buy/sell recommendation, or an offer to buy or sell any security.
+            Forecasts are statistical projections from linear regression — <strong>not guaranteed returns</strong>.
+            Always consult a <strong>SEBI-registered investment advisor</strong> before any investment decision.
+          </p>
+        </div>
+        <div style={{textAlign:"center",fontSize:11,color:"var(--tx4)",padding:"10px 0"}}>
+          Stocklyze v5 · Live data via Yahoo Finance · AI by Groq · Analysis at {new Date(s.analysed_at).toLocaleString("en-IN")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── ROOT APP ───────────────────────────────────────────────── */
+function App(){
+  const[sym,setSym]=useState(null);
+  return(
+    <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <Ticker/>
+      <Navbar onBack={()=>setSym(null)} showBack={!!sym}/>
+      {sym?<AnalysisPage sym={sym}/>:<HomePage onSearch={setSym}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
