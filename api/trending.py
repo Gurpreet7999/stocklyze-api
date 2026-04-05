@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 import json, sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import CORS_HEADERS, yf_sym, safe
 import yfinance as yf
 
