@@ -1,7 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import json, sys, os, math
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _utils import CORS_HEADERS, yf_sym, safe, fmt_cap, score_stock, groq_analysis, SECTOR_PE
 import yfinance as yf
 import numpy as np
