@@ -2,7 +2,23 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/*.py",
+      "src": "api/analyse.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api/search.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api/indices.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api/trending.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api/health.py",
       "use": "@vercel/python"
     },
     {
@@ -11,8 +27,12 @@
     }
   ],
   "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1.py" },
-    { "src": "/(.*)", "dest": "/index.html" }
+    { "src": "/api/analyse",  "dest": "/api/analyse.py"  },
+    { "src": "/api/search",   "dest": "/api/search.py"   },
+    { "src": "/api/indices",  "dest": "/api/indices.py"  },
+    { "src": "/api/trending", "dest": "/api/trending.py" },
+    { "src": "/api/health",   "dest": "/api/health.py"   },
+    { "src": "/(.*)",         "dest": "/index.html"       }
   ],
   "env": {
     "GROQ_API_KEY": "@groq_api_key"
