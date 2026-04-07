@@ -1,148 +1,143 @@
-from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
 import json, sys, os, math
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import CORS_HEADERS, yf_sym, safe, fmt_cap, score_stock, groq_analysis, SECTOR_PE
-import yfinance as yf
+sys.path.insert(0, os.path.dirname(__file__))
+from _utils import (yf_sym, safe, fmt_cap, get_chart, get_fundamentals,
+                    score_stock, groq_analysis, SECTOR_PE)
 import numpy as np
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        # Extract symbol from path: /api/analyse?sym=RELIANCE
-        q = parse_qs(urlparse(self.path).query)
-        sym = (q.get("sym", [""])[0] or q.get("symbol", [""])[0]).upper().strip()
+HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
 
-        if not sym:
-            self.send_response(400)
-            for k, v in CORS_HEADERS.items(): self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error":"sym parameter required"}).encode())
-            return
+def handler(request):
+    # OPTIONS preflight
+    if request.get("method","GET") == "OPTIONS":
+        return {"statusCode": 200, "headers": HEADERS, "body": ""}
 
-        try:
-            result = fetch_and_analyse(sym)
-            self.send_response(200)
-            for k, v in CORS_HEADERS.items(): self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
-        except Exception as e:
-            self.send_response(404 if "No data" in str(e) else 500)
-            for k, v in CORS_HEADERS.items(): self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+    # Parse symbol from query string
+    qs  = parse_qs(urlparse(request.get("url","")).query)
+    sym = (qs.get("sym",[""])[0] or qs.get("symbol",[""])[0]).upper().strip()
 
-    def do_OPTIONS(self):
-        self.send_response(200)
-        for k, v in CORS_HEADERS.items(): self.send_header(k, v)
-        self.end_headers()
+    if not sym:
+        return {"statusCode": 400, "headers": HEADERS,
+                "body": json.dumps({"error": "sym parameter required. Example: /api/analyse?sym=RELIANCE"})}
+
+    try:
+        result = analyse(sym)
+        return {"statusCode": 200, "headers": HEADERS, "body": json.dumps(result, default=str)}
+    except ValueError as e:
+        return {"statusCode": 404, "headers": HEADERS, "body": json.dumps({"error": str(e)})}
+    except Exception as e:
+        return {"statusCode": 500, "headers": HEADERS, "body": json.dumps({"error": f"Analysis failed: {str(e)}"})}
 
 
-def fetch_and_analyse(sym: str) -> dict:
+def analyse(sym: str) -> dict:
     ysym = yf_sym(sym)
-    ticker = yf.Ticker(ysym)
 
-    # Fetch 2yr history
-    hist = ticker.history(period="2y", auto_adjust=True)
-    if hist.empty:
-        ticker = yf.Ticker(sym + ".BO")
-        hist = ticker.history(period="2y", auto_adjust=True)
-    if hist.empty:
-        raise ValueError(f"No data found for '{sym}'. Use a valid NSE symbol like RELIANCE, TCS, HDFCBANK.")
+    # Step 1: Get 1-year chart data (faster than 2yr, enough for analysis)
+    series = get_chart(ysym, period="1y")
 
-    # Build OHLCV series
-    series = []
-    for dt, row in hist.iterrows():
-        c = round(float(row.get("Close", 0)), 2)
-        if c <= 0: continue
-        series.append({
-            "time": dt.strftime("%Y-%m-%d"),
-            "open": round(float(row.get("Open", c)), 2),
-            "high": round(float(row.get("High", c)), 2),
-            "low":  round(float(row.get("Low",  c)), 2),
-            "close": c,
-            "volume": int(row.get("Volume", 0)),
-        })
-    if len(series) < 10:
-        raise ValueError(f"Insufficient price data for '{sym}'")
+    # Fallback to BSE if NSE fails
+    if not series or len(series) < 20:
+        bse_sym = sym + ".BO"
+        series = get_chart(bse_sym, period="1y")
 
-    # Fundamentals
-    full_info = {}
-    try: full_info = ticker.info
-    except: pass
+    if not series or len(series) < 20:
+        raise ValueError(
+            f"No data found for '{sym}'. "
+            f"Make sure it is a valid NSE symbol (e.g. RELIANCE, TCS, HDFCBANK, ZOMATO, INFY)."
+        )
 
-    g = lambda k, d=0.0: safe(full_info.get(k, d), d)
+    # Step 2: Get fundamentals (PE, ROE, margins etc.)
+    fd = get_fundamentals(ysym)
+    if not fd.get("name"):
+        fd_bse = get_fundamentals(sym + ".BO")
+        if fd_bse.get("name"): fd = fd_bse
 
-    cur   = round(g("currentPrice") or g("regularMarketPrice") or series[-1]["close"], 2)
-    prev  = round(g("previousClose") or (series[-2]["close"] if len(series)>1 else cur), 2)
-    chg   = round(cur - prev, 2)
-    pct   = round(chg/prev*100 if prev>0 else 0, 2)
+    # Step 3: Build price stats from series
+    closes_arr = np.array([s["close"] for s in series], dtype=float)
+    highs_arr  = np.array([s["high"]  for s in series], dtype=float)
+    lows_arr   = np.array([s["low"]   for s in series], dtype=float)
 
-    closes_arr = np.array([s["close"] for s in series])
-    h52 = round(g("fiftyTwoWeekHigh") or float(np.array([s["high"] for s in series[-252:]]).max()), 2)
-    l52 = round(g("fiftyTwoWeekLow")  or float(np.array([s["low"]  for s in series[-252:]]).min()), 2)
-    mc  = g("marketCap")
-    pe  = round(g("trailingPE"), 1) if g("trailingPE") else None
-    pb  = round(g("priceToBook"), 2) if g("priceToBook") else None
-    sector   = full_info.get("sector", "") or ""
-    industry = full_info.get("industry", "") or ""
-    name     = full_info.get("longName") or full_info.get("shortName") or sym
-    desc     = (full_info.get("longBusinessSummary","") or "")[:500]
+    cur  = round(float(series[-1]["close"]), 2)
+    prev = round(float(series[-2]["close"]) if len(series)>1 else cur, 2)
+    chg  = round(cur - prev, 2)
+    pct  = round(chg / prev * 100, 2) if prev > 0 else 0
 
-    fd_data = {
-        "sector": sector, "beta": g("beta",1),
-        "trailing_pe": g("trailingPE"), "price_to_book": g("priceToBook"),
-        "revenue_growth": g("revenueGrowth"), "earnings_growth": g("earningsGrowth"),
-        "profit_margins": g("profitMargins"), "return_on_equity": g("returnOnEquity"),
-        "return_on_assets": g("returnOnAssets"), "debt_to_equity": g("debtToEquity"),
-        "held_percent_institutions": g("heldPercentInstitutions"),
-        "held_percent_insiders": g("heldPercentInsiders"),
-    }
+    h52  = round(float(highs_arr[-252:].max())  if len(highs_arr)>=252  else float(highs_arr.max()),  2)
+    l52  = round(float(lows_arr[-252:].min())   if len(lows_arr)>=252   else float(lows_arr.min()),   2)
+    ma50 = round(float(np.mean(closes_arr[-50:])),  2) if len(closes_arr)>=50  else cur
+    ma200= round(float(np.mean(closes_arr[-200:])), 2) if len(closes_arr)>=200 else cur
 
-    eng = score_stock(fd_data, series)
-    spe = SECTOR_PE.get(sector, 22)
+    # Use fundamentals or fallback values
+    mc     = fd.get("mc", 0)
+    pe     = fd.get("pe") or None
+    pb     = fd.get("pb") or None
+    sector = fd.get("sector","")
+    spe    = SECTOR_PE.get(sector, 22)
+    name   = fd.get("name") or sym
 
-    # Groq AI analysis
+    # Step 4: Score engine
+    eng = score_stock(fd, series)
+
+    # Step 5: Groq AI analysis (non-blocking — returns None if fails)
     groq_text = groq_analysis({
-        "sym":sym,"name":name,"sector":sector,"price":cur,"h52":h52,"l52":l52,
-        "pe":f"{pe:.1f}" if pe else "N/A","pb":f"{pb:.1f}" if pb else "N/A",
-        "spe":spe,"mc_fmt":fmt_cap(mc),
-        "rg": round(g("revenueGrowth",0)*100,2),
-        "pm": round(g("profitMargins",0)*100,2),
-        "roe":round(g("returnOnEquity",0)*100,2),
-        "inst":round(g("heldPercentInstitutions",0)*100,2),
-        "beta":round(g("beta",1),2),
+        "sym": sym, "name": name, "sector": sector,
+        "price": cur, "h52": h52, "l52": l52,
+        "pe":  f"{pe:.1f}" if pe else "N/A",
+        "pb":  f"{pb:.1f}" if pb else "N/A",
+        "spe": spe, "mc_fmt": fmt_cap(mc),
+        "rg":  round(safe(fd.get("revenue_growth",0))*100, 2),
+        "pm":  round(safe(fd.get("profit_margins",0))*100, 2),
+        "roe": round(safe(fd.get("return_on_equity",0))*100, 2),
+        "inst":round(safe(fd.get("held_institutions",0))*100, 2),
+        "beta":round(safe(fd.get("beta",1),1), 2),
         **eng,
     })
 
     return {
-        "sym":sym,"name":name,"sector":sector,"industry":industry,
-        "description":desc,"exchange":full_info.get("exchange","NSE"),
-        "price":cur,"change":chg,"pct":pct,
-        "open": round(g("regularMarketOpen") or series[-1]["open"], 2),
-        "high": round(g("regularMarketDayHigh") or series[-1]["high"], 2),
-        "low":  round(g("regularMarketDayLow")  or series[-1]["low"],  2),
-        "vol":  int(g("regularMarketVolume") or series[-1]["volume"]),
-        "h52":h52,"l52":l52,"mc":mc,"mc_fmt":fmt_cap(mc),
-        "pe":pe,"pb":pb,"spe":spe,
-        "eps":  round(g("trailingEps"),2) if g("trailingEps") else None,
-        "beta": round(g("beta",1),2),
-        "div_yield": round(g("dividendYield",0)*100,2),
-        "rg":  round(g("revenueGrowth",0)*100,2),
-        "pm":  round(g("profitMargins",0)*100,2),
-        "roe": round(g("returnOnEquity",0)*100,2),
-        "roa": round(g("returnOnAssets",0)*100,2),
-        "op_margin":round(g("operatingMargins",0)*100,2),
-        "eg":  round(g("earningsGrowth",0)*100,2),
-        "de":  round(g("debtToEquity",0)/100,2),
-        "inst":    round(g("heldPercentInstitutions",0)*100,2),
-        "insiders":round(g("heldPercentInsiders",0)*100,2),
-        "target_price":round(g("targetMeanPrice"),2) if g("targetMeanPrice") else None,
-        "analyst_count":int(g("numberOfAnalystOpinions",0)),
-        "ma50": round(float(np.mean(closes_arr[-50:])),2) if len(closes_arr)>=50 else cur,
-        "ma200":round(float(np.mean(closes_arr[-200:])),2) if len(closes_arr)>=200 else cur,
+        "sym": sym,
+        "name": name,
+        "sector": sector,
+        "industry": fd.get("industry",""),
+        "description": fd.get("description",""),
+        "exchange": fd.get("exchange","NSE"),
+        "price":  cur,
+        "change": chg,
+        "pct":    pct,
+        "open":   round(float(series[-1]["open"]),  2),
+        "high":   round(float(series[-1]["high"]),  2),
+        "low":    round(float(series[-1]["low"]),   2),
+        "vol":    series[-1]["volume"],
+        "h52":    h52,
+        "l52":    l52,
+        "mc":     mc,
+        "mc_fmt": fmt_cap(mc),
+        "pe":     round(pe, 1) if pe else None,
+        "pb":     round(pb, 2) if pb else None,
+        "spe":    spe,
+        "eps":    fd.get("eps"),
+        "beta":   round(safe(fd.get("beta",1),1), 2),
+        "div_yield":  round(safe(fd.get("div_yield",0))*100, 2),
+        "rg":         round(safe(fd.get("revenue_growth",0))*100, 2),
+        "pm":         round(safe(fd.get("profit_margins",0))*100, 2),
+        "roe":        round(safe(fd.get("return_on_equity",0))*100, 2),
+        "roa":        round(safe(fd.get("return_on_assets",0))*100, 2),
+        "op_margin":  round(safe(fd.get("op_margins",0))*100, 2),
+        "eg":         round(safe(fd.get("earnings_growth",0))*100, 2),
+        "de":         round(safe(fd.get("debt_to_equity",0))/100, 2),
+        "inst":       round(safe(fd.get("held_institutions",0))*100, 2),
+        "insiders":   round(safe(fd.get("held_insiders",0))*100, 2),
+        "target_price":  fd.get("target_price"),
+        "analyst_count": fd.get("analyst_count",0),
+        "ma50":  ma50,
+        "ma200": ma200,
         **eng,
-        "series":series,
-        "groq_text":groq_text,
-        "analysed_at":datetime.utcnow().isoformat()+"Z",
+        "series":       series,
+        "groq_text":    groq_text,
+        "analysed_at":  datetime.utcnow().isoformat() + "Z",
     }
