@@ -1,8 +1,6 @@
-from http.server import BaseHTTPRequestHandler
 import json, sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import CORS_HEADERS, safe
-import yfinance as yf
+sys.path.insert(0, os.path.dirname(__file__))
+from _utils import get_chart, safe
 
 INDICES = [
     {"name":"NIFTY 50",   "sym":"^NSEI"},
@@ -13,33 +11,34 @@ INDICES = [
     {"name":"IT NIFTY",   "sym":"^CNXIT"},
 ]
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        results = []
-        for idx in INDICES:
-            try:
-                h = yf.Ticker(idx["sym"]).history(period="5d", auto_adjust=True)
-                if len(h) >= 2:
-                    cur  = round(float(h["Close"].iloc[-1]), 2)
-                    prev = round(float(h["Close"].iloc[-2]), 2)
-                    chg  = round(cur - prev, 2)
-                    pct  = round(chg / prev * 100, 2) if prev > 0 else 0
-                else:
-                    cur = chg = pct = 0
-                results.append({"name":idx["name"],"sym":idx["sym"],"price":cur,
-                                "change":chg,"pct":pct,"direction":"up" if chg>=0 else "down"})
-            except:
-                results.append({"name":idx["name"],"sym":idx["sym"],
-                               "price":0,"change":0,"pct":0,"direction":"neutral"})
+HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
 
-        self.send_response(200)
-        for k, v in CORS_HEADERS.items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(json.dumps(results).encode())
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        for k, v in CORS_HEADERS.items():
-            self.send_header(k, v)
-        self.end_headers()
+def handler(request):
+    results = []
+    for idx in INDICES:
+        series = get_chart(idx["sym"], period="5d")
+        if series and len(series) >= 2:
+            cur  = series[-1]["close"]
+            prev = series[-2]["close"]
+            chg  = round(cur - prev, 2)
+            pct  = round(chg / prev * 100, 2) if prev > 0 else 0
+        else:
+            cur = chg = pct = 0
+        results.append({
+            "name": idx["name"],
+            "sym":  idx["sym"],
+            "price":  round(cur, 2),
+            "change": chg,
+            "pct":    pct,
+            "direction": "up" if chg >= 0 else "down",
+        })
+    return {
+        "statusCode": 200,
+        "headers": HEADERS,
+        "body": json.dumps(results),
+    }
