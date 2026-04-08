@@ -6,7 +6,6 @@ HEADERS = {
     "Access-Control-Allow-Origin": "*",
 }
 
-# load cached data
 DATA = {}
 try:
     with open(os.path.join(os.path.dirname(__file__), "../data/stocks.json")) as f:
@@ -14,25 +13,17 @@ try:
 except:
     DATA = {}
 
-
 def app(request):
-    path = request.get("path", "")
+    qs = parse_qs(urlparse(request.get("url", "")).query)
+    sym = (qs.get("sym", [""])[0]).upper().strip()
 
-    # route handling
-    if path.endswith("/api/analyse"):
-        qs = parse_qs(urlparse(request.get("url", "")).query)
-        sym = (qs.get("sym", [""])[0]).upper().strip()
+    if not sym:
+        return res({"error": "symbol required"})
 
-        if not sym:
-            return res({"error": "symbol required"})
+    if sym not in DATA:
+        return res({"error": "Stock not found or not cached"})
 
-        if sym not in DATA:
-            return res({"error": "Stock not found or not cached"})
-
-        return res(DATA[sym])
-
-    return res({"message": "API working"})
-
+    return res(DATA[sym])
 
 def res(data):
     return {
