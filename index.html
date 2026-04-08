@@ -115,10 +115,8 @@ const Ticker=memo(function Ticker(){
   },[]);
 
   useEffect(()=>{
-    load();
-    const t=setInterval(load,60000);
-    return()=>clearInterval(t);
-  },[load]);
+  load();
+},[load]);
 
   if(!loaded) return(
     <div style={{background:"#fff",borderBottom:"1px solid var(--brd)",height:44,display:"flex",alignItems:"center",padding:"0 20px"}}>
