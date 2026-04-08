@@ -1,8 +1,26 @@
 {
   "RELIANCE": {
     "sym": "RELIANCE",
-    "price": 2900,
-    "change": 10,
-    "pct": "0.35%"
+    "price": 1304.65,
+    "change": -0.1,
+    "pct": "-0.0077%"
+  },
+  "TCS": {
+    "sym": "TCS",
+    "price": 2559.8,
+    "change": 19.9499,
+    "pct": "0.7855%"
+  },
+  "INFY": {
+    "sym": "INFY",
+    "price": 1340.15,
+    "change": 34.0,
+    "pct": "2.6031%"
+  },
+  "HDFCBANK": {
+    "sym": "HDFCBANK",
+    "price": 772.05,
+    "change": 0.85,
+    "pct": "0.1102%"
   }
 }
