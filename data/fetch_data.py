@@ -1,6 +1,6 @@
 import requests, json, time, os
 
-API_KEY = "7FWMCB6KRCIOBHGP"
+API_KEY = os.getenv("ALPHA_KEY")
 
 STOCKS = [
     "RELIANCE.BSE",
