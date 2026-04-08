@@ -1,18 +1,12 @@
 {
   "version": 2,
   "functions": {
-    "api/health.py":   { "runtime": "python@3.12", "maxDuration": 30 },
-    "api/indices.py":  { "runtime": "python@3.12", "maxDuration": 30 },
-    "api/search.py":   { "runtime": "python@3.12", "maxDuration": 15 },
-    "api/trending.py": { "runtime": "python@3.12", "maxDuration": 55 },
-    "api/analyse.py":  { "runtime": "python@3.12", "maxDuration": 55 }
+    "api/*.py": {
+      "runtime": "python@3.12",
+      "maxDuration": 60
+    }
   },
   "routes": [
-    { "src": "/api/health",   "dest": "/api/health.py"   },
-    { "src": "/api/indices",  "dest": "/api/indices.py"  },
-    { "src": "/api/search",   "dest": "/api/search.py"   },
-    { "src": "/api/trending", "dest": "/api/trending.py" },
-    { "src": "/api/analyse",  "dest": "/api/analyse.py"  },
-    { "src": "/(.*)",         "dest": "/index.html"      }
+    { "src": "/api/(.*)", "dest": "/api/$1.py" }
   ]
 }
