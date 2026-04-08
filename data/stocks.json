@@ -22,5 +22,23 @@
     "price": 772.05,
     "change": 0.85,
     "pct": "0.1102%"
+  },
+  "ICICIBANK": {
+    "sym": "ICICIBANK",
+    "price": 1246.2,
+    "change": 14.9,
+    "pct": "1.2101%"
+  },
+  "SBIN": {
+    "sym": "SBIN",
+    "price": 1030.3,
+    "change": -2.35,
+    "pct": "-0.2276%"
+  },
+  "ITC": {
+    "sym": "ITC",
+    "price": 298.55,
+    "change": 3.75,
+    "pct": "1.2720%"
   }
 }
