@@ -65,10 +65,7 @@ def analyse(sym: str) -> dict:
         )
 
     # Step 2: Get fundamentals (PE, ROE, margins etc.)
-    fd = get_fundamentals(ysym)
-    if not fd.get("name"):
-        fd_bse = get_fundamentals(sym + ".BO")
-        if fd_bse.get("name"): fd = fd_bse
+    
 
     # Step 3: Build price stats from series
     closes_arr = np.array([s["close"] for s in series], dtype=float)
