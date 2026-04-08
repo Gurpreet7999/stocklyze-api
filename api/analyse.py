@@ -6,6 +6,18 @@ import numpy as np
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
+import time
+
+def cached_analyse(sym):
+    now = time.time()
+
+    if sym in CACHE and now - CACHE[sym]["ts"] < CACHE_TTL:
+        return CACHE[sym]["data"]
+
+    data = analyse(sym)
+    CACHE[sym] = {"data": data, "ts": now}
+    return data
+
 HEADERS = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
