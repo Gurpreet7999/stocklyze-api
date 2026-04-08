@@ -39,7 +39,7 @@ def handler(request):
                 "body": json.dumps({"error": "sym parameter required. Example: /api/analyse?sym=RELIANCE"})}
 
     try:
-        result = analyse(sym)
+        result = cached_analyse(sym)
         return {"statusCode": 200, "headers": HEADERS, "body": json.dumps(result, default=str)}
     except ValueError as e:
         return {"statusCode": 404, "headers": HEADERS, "body": json.dumps({"error": str(e)})}
