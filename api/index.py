@@ -16,11 +16,13 @@ except:
 
 def app(request):
     url = request.get("url", "")
-    path = request.get("path", "")
+    
+    # 👉 FIX: use URL path instead of request["path"]
+    parsed = urlparse(url)
+    route = parsed.path
 
-    # 👉 IMPORTANT ROUTING
-    if path.endswith("/api/analyse"):
-        qs = parse_qs(urlparse(url).query)
+    if route.endswith("/api/analyse"):
+        qs = parse_qs(parsed.query)
         sym = (qs.get("sym", [""])[0]).upper().strip()
 
         if not sym:
@@ -31,7 +33,6 @@ def app(request):
 
         return res(DATA[sym])
 
-    # default response
     return res({"message": "API running"})
 
 def res(data):
