@@ -44,17 +44,27 @@ def fmt_cap(v):
     return f"Rs.{v:,.0f}"
 
 def get_chart(symbol, period="1y"):
-    """Direct Yahoo Finance chart API — returns parsed OHLCV list."""
     for base in ["https://query1.finance.yahoo.com","https://query2.finance.yahoo.com"]:
         try:
             url=f"{base}/v8/finance/chart/{symbol}?interval=1d&range={period}"
-            r=req.get(url,headers=YF_HEADERS,timeout=18)
-            if not r.ok: continue
+            r=req.get(url,headers=YF_HEADERS,timeout=10)
+
+            if r.status_code == 429:
+                return []  # 🔥 rate limited
+
+            if not r.ok:
+                continue
+
             d=r.json()
             res=d.get("chart",{}).get("result",[])
-            if not res: continue
+            if not res:
+                continue
+
             return _parse_chart(res[0])
-        except: continue
+
+        except:
+            continue
+
     return []
 
 def _parse_chart(res):
