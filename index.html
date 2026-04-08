@@ -247,12 +247,14 @@ function HomePage({onSearch}){
   const[err,setErr]=useState("");
   const inpRef=useRef(null);
   const abortRef = useRef(null);
+  const debounceRef = useRef(null);
+  const lastClickRef = useRef(0);
 
   useEffect(()=>{inpRef.current?.focus();},[]);
 
   // Live search via backend — no hardcoded list
   const doSearch = useCallback(async (v) => {
-  if (!v || v.trim().length < 1) {
+  if (!v || v.trim().length < 2) {
     setResults([]);
     setShowDrop(false);
     return;
@@ -265,6 +267,7 @@ function HomePage({onSearch}){
 
   const controller = new AbortController();
   abortRef.current = controller;
+    
 
   setLoading(true);
 
@@ -295,10 +298,20 @@ function HomePage({onSearch}){
     debounceRef.current = setTimeout(() => doSearch(v), 600);
   };
 
-  const go=(sym)=>{
-    setErr("");setQ("");setShowDrop(false);setResults([]);
-    onSearch(sym.toUpperCase().trim());
-  };
+  const go = (sym) => {
+  const now = Date.now();
+
+  if (now - lastClickRef.current < 1000) return;
+
+  lastClickRef.current = now;
+
+  setErr("");
+  setQ("");
+  setShowDrop(false);
+  setResults([]);
+
+  onSearch(sym.toUpperCase().trim());
+};
 
   const submit=()=>{
     const v=q.trim();
