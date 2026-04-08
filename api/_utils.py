@@ -102,20 +102,20 @@ def get_meta(res):
         "exchange": m.get("exchangeName","NSE"),
     }
 
-def get_fundamentals(symbol):
-    """Yahoo Finance quoteSummary for PE, ROE, margins etc."""
-    mods="financialData,defaultKeyStatistics,summaryDetail,assetProfile,price"
-    for base in ["https://query2.finance.yahoo.com","https://query1.finance.yahoo.com"]:
-        try:
-            url=f"{base}/v11/finance/quoteSummary/{symbol}?modules={mods}"
-            r=req.get(url,headers=YF_HEADERS,timeout=15)
-            if not r.ok: continue
-            d=r.json()
-            res=d.get("quoteSummary",{}).get("result",[])
-            if not res: continue
-            return _parse_fundamentals(res[0])
-        except: continue
-    return {}
+# def get_fundamentals(symbol):
+#     """Yahoo Finance quoteSummary for PE, ROE, margins etc."""
+#     mods="financialData,defaultKeyStatistics,summaryDetail,assetProfile,price"
+#     for base in ["https://query2.finance.yahoo.com","https://query1.finance.yahoo.com"]:
+#         try:
+#             url=f"{base}/v11/finance/quoteSummary/{symbol}?modules={mods}"
+#             r=req.get(url,headers=YF_HEADERS,timeout=15)
+#             if not r.ok: continue
+#             d=r.json()
+#             res=d.get("quoteSummary",{}).get("result",[])
+#             if not res: continue
+#             return _parse_fundamentals(res[0])
+#         except: continue
+#     return {}
 
 def _parse_fundamentals(r):
     fd=r.get("financialData",{}) or {}
