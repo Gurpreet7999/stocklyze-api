@@ -15,7 +15,7 @@ except:
     DATA = {}
 
 
-def handler(request):
+def app(request):
     path = request.get("path", "")
 
     # route handling
