@@ -176,10 +176,6 @@ const Navbar=({onBack,showBack})=>(
 );
 
 /* ── TRENDING SECTION ──────────────────────────────────────── */
-function TrendingSection({onSearch}){
-  const[data,setData]=useState(null);
-  const[tab,setTab]=useState("gainers");
-  const[loading,setLoading]=useState(true);
 
   useEffect(()=>{
     apiFetch("/api/trending")
@@ -416,8 +412,7 @@ function HomePage({onSearch}){
         {err&&<p style={{color:"#C62828",fontSize:12,marginBottom:12}}>{err}</p>}
 
         {/* LIVE TRENDING */}
-        <TrendingSection onSearch={onSearch}/>
-
+        
         <p style={{fontSize:11,color:"#9CA3AF",marginTop:24,lineHeight:1.8}}>
           All NSE/BSE stocks · Powered by Yahoo Finance + Groq AI<br/>
           Live data · Auto-updating · No manual intervention needed<br/>
