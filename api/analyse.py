@@ -7,7 +7,10 @@ from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 CACHE = {}
-CACHE_TTL = 120
+CACHE_TTL = 300
+
+LAST_CALL = {}
+COOLDOWN = 5
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -39,10 +42,18 @@ def handler(request):
     except Exception as e:
         return res({"error": "Server failed"}, code=200)
 
-
 def analyse(sym):
-    ysym = yf_sym(sym)
+    import time
 
+    now = time.time()
+
+    if sym in LAST_CALL and now - LAST_CALL[sym] < COOLDOWN:
+        return {"error": "Wait 5 seconds before retrying"}
+
+    LAST_CALL[sym] = now
+
+    ysym = yf_sym(sym)    
+    
     # fetch chart
     try:
         series = get_chart(ysym, "6mo")
@@ -63,10 +74,7 @@ def analyse(sym):
     ma50 = round(np.mean(closes[-50:]), 2) if len(closes) >= 50 else cur
 
     # fundamentals (optional)
-    try:
-        fd = get_fundamentals(ysym)
-    except:
-        fd = {}
+    fd = {}
 
     return {
         "sym": sym,
