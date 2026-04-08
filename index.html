@@ -246,27 +246,53 @@ function HomePage({onSearch}){
   const[showDrop,setShowDrop]=useState(false);
   const[err,setErr]=useState("");
   const inpRef=useRef(null);
-  const debounceRef=useRef(null);
+  const abortRef = useRef(null);
 
   useEffect(()=>{inpRef.current?.focus();},[]);
 
   // Live search via backend — no hardcoded list
-  const doSearch=useCallback(async(v)=>{
-    if(!v||v.trim().length<1){setResults([]);setShowDrop(false);return;}
-    setLoading(true);
-    try{
-      const d=await apiFetch(`/api/search?q=${encodeURIComponent(v)}`);
-      setResults(d||[]);
-      setShowDrop(true);
-    }catch{setResults([]);}
-    setLoading(false);
-  },[]);
+  const doSearch = useCallback(async (v) => {
+  if (!v || v.trim().length < 1) {
+    setResults([]);
+    setShowDrop(false);
+    return;
+  }
+
+  // ❌ cancel previous request
+  if (abortRef.current) {
+    abortRef.current.abort();
+  }
+
+  const controller = new AbortController();
+  abortRef.current = controller;
+
+  setLoading(true);
+
+  try {
+    const r = await fetch(API + `/api/search?q=${encodeURIComponent(v)}`, {
+      signal: controller.signal
+    });
+
+    if (!r.ok) throw new Error("error");
+
+    const d = await r.json();
+    setResults(d || []);
+    setShowDrop(true);
+
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      setResults([]);
+    }
+  }
+
+  setLoading(false);
+}, []);
 
   const handleChange=(e)=>{
     const v=e.target.value;
     setQ(v);setErr("");
     clearTimeout(debounceRef.current);
-    debounceRef.current=setTimeout(()=>doSearch(v),300);
+    debounceRef.current = setTimeout(() => doSearch(v), 600);
   };
 
   const go=(sym)=>{
