@@ -57,7 +57,7 @@ def handler(request):
                 results.append({"sym":sym,"name":sym,"exchange":"NSE","sector":""})
 
     return {
-        "statusCode": 200,
-        "headers": HEADERS,
-        "body": json.dumps(results[:12]),
-    }
+    "statusCode": 200,
+    "headers": HEADERS,
+    "body": json.dumps([])
+}
