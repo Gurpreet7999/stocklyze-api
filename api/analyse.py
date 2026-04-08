@@ -8,6 +8,9 @@ from urllib.parse import parse_qs, urlparse
 
 import time
 
+CACHE = {}
+CACHE_TTL = 120
+
 def cached_analyse(sym):
     now = time.time()
 
@@ -44,28 +47,35 @@ def handler(request):
     except ValueError as e:
         return {"statusCode": 404, "headers": HEADERS, "body": json.dumps({"error": str(e)})}
     except Exception as e:
-        return {"statusCode": 500, "headers": HEADERS, "body": json.dumps({"error": f"Analysis failed: {str(e)}"})}
+    return {"statusCode": 200, "headers": HEADERS,
+            "body": json.dumps({"error": "Server busy, try again in 10 seconds"})}
 
 
 def analyse(sym: str) -> dict:
     ysym = yf_sym(sym)
 
     # Step 1: Get 1-year chart data (faster than 2yr, enough for analysis)
+   try:
     series = get_chart(ysym, period="1y")
+except:
+    series = []
 
     # Fallback to BSE if NSE fails
     if not series or len(series) < 20:
+    try:
         bse_sym = sym + ".BO"
         series = get_chart(bse_sym, period="1y")
+    except:
+        series = []
 
     if not series or len(series) < 20:
-        raise ValueError(
-            f"No data found for '{sym}'. "
-            f"Make sure it is a valid NSE symbol (e.g. RELIANCE, TCS, HDFCBANK, ZOMATO, INFY)."
-        )
+        if not series or len(series) < 20:
+    return {
+        "error": "Stock data unavailable (Yahoo rate limited or invalid symbol)"
+    }
 
     # Step 2: Get fundamentals (PE, ROE, margins etc.)
-    
+    fd = get_fundamentals(ysym) or {}
 
     # Step 3: Build price stats from series
     closes_arr = np.array([s["close"] for s in series], dtype=float)
