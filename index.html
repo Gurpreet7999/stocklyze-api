@@ -51,10 +51,7 @@ input:focus{outline:none}
 // ══════════════════════════════════════════════════════════════
 // Vercel deployment — API is on same domain, no URL change needed!
 // /api/indices, /api/search etc. are served from the same Vercel project
-const API = window.STOCKLYZE_API ||
-  (location.hostname==="localhost"||location.hostname==="127.0.0.1"
-    ? "http://localhost:8000"    // local dev
-    : "");                       // Vercel: same origin, empty = relative URLs
+const API = "https://web-production-c1ce38.up.railway.app";                     // Vercel: same origin, empty = relative URLs
 
 // Verdict color/bg mapping
 const VCOL={
