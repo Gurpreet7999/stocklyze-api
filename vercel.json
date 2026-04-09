@@ -1,14 +1,17 @@
 {
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    }
-  ],
+  "version": 2,
+  "functions": {
+    "api/analyse.py": { "runtime": "python3.12" },
+    "api/indices.py": { "runtime": "python3.12" },
+    "api/search.py": { "runtime": "python3.12" },
+    "api/trending.py": { "runtime": "python3.12" },
+    "api/health.py": { "runtime": "python3.12" }
+  },
   "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "api/index.py"
-    }
+    { "src": "/api/analyse", "dest": "/api/analyse.py" },
+    { "src": "/api/search", "dest": "/api/search.py" },
+    { "src": "/api/trending", "dest": "/api/trending.py" },
+    { "src": "/api/indices", "dest": "/api/indices.py" },
+    { "src": "/api/health", "dest": "/api/health.py" }
   ]
 }
