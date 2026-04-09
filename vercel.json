@@ -1,8 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/analyse.py": { "runtime": "python3.12" }
-  },
   "routes": [
     { "src": "/api/analyse", "dest": "/api/analyse.py" }
   ]
