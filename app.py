@@ -27,6 +27,15 @@ def search(q: str):
         s for s in stocks
         if q in s["sym"].lower() or q in s["name"].lower()
     ]
+
+@app.get("/api/indices")
+def indices():
+    return [
+        {"name": "NIFTY 50", "price": 22450, "change": 120, "pct": 0.54},
+        {"name": "SENSEX", "price": 73900, "change": -80, "pct": -0.11},
+        {"name": "BANK NIFTY", "price": 48200, "change": 210, "pct": 0.44},
+    ]
+
 def run_analysis(sym: str):
     # simulate Vercel request
     request = {
