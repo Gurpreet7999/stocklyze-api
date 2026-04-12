@@ -8,7 +8,7 @@ HEADERS = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "*",
 }
 
 POPULAR = [
@@ -27,6 +27,15 @@ POPULAR = [
 ]
 
 def handler(request):
+
+    # ✅ HANDLE PREFLIGHT (VERY IMPORTANT)
+    if request.get("method") == "OPTIONS":
+        return {
+            "statusCode": 200,
+            "headers": HEADERS,
+            "body": ""
+        }
+
     # Parse query param
     qs = parse_qs(urlparse(request.get("url","")).query)
     q  = (qs.get("q",[""])[0] or "").strip()
