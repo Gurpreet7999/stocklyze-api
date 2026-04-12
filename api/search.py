@@ -59,5 +59,5 @@ def handler(request):
     return {
     "statusCode": 200,
     "headers": HEADERS,
-    "body": json.dumps([])
+    "body": json.dumps(results[:12])
 }
