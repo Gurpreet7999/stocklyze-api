@@ -261,6 +261,9 @@ async def analyse(sym: str = ""):
         return {"error": f"No valid price data returned for '{sym}'."}
 
     # ── Fetch fundamentals via quoteSummary ───────────────────
+    # Use v11 — more reliable than v10 for Indian NSE/BSE tickers.
+    # We track whether fundamentals actually populated so the frontend
+    # can show a "data unavailable" notice rather than showing zeroes.
     fd = {
         "name": meta.get("longName") or meta.get("shortName") or sym,
         "sector": "", "industry": "", "description": "", "exchange": "",
@@ -271,24 +274,34 @@ async def analyse(sym: str = ""):
         "held_institutions": 0, "held_insiders": 0,
         "target_price": 0, "analyst_count": 0,
     }
+    fundamentals_available = False
 
-    try:
-        modules = (
-            "financialData,defaultKeyStatistics,"
-            "summaryDetail,assetProfile,price"
-        )
-        qs_url = (
-            f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}{used_suffix}"
-            f"?modules={modules}"
-        )
-        async with httpx.AsyncClient(headers=YF_HEADERS, timeout=12) as client:
-            rs = await client.get(qs_url)
-            if rs.status_code == 200:
-                qs = rs.json().get("quoteSummary", {}).get("result", [])
-                if qs:
-                    fd.update(u._parse_fundamentals(qs[0]))
-    except Exception:
-        pass  # fundamentals are optional; scoring still works with defaults
+    for qs_ver in ["v11", "v10"]:
+        try:
+            modules = (
+                "financialData,defaultKeyStatistics,"
+                "summaryDetail,assetProfile,price"
+            )
+            qs_url = (
+                f"https://query1.finance.yahoo.com/{qs_ver}/finance/quoteSummary"
+                f"/{sym}{used_suffix}?modules={modules}&corsDomain=finance.yahoo.com"
+            )
+            async with httpx.AsyncClient(headers=YF_HEADERS, timeout=12) as client:
+                rs = await client.get(qs_url)
+                if rs.status_code == 200:
+                    qs_result = rs.json().get("quoteSummary", {}).get("result", [])
+                    if qs_result:
+                        parsed = u._parse_fundamentals(qs_result[0])
+                        fd.update(parsed)
+                        # Check if we got meaningful data
+                        key_fields = [
+                            parsed.get("pe", 0), parsed.get("mc", 0),
+                            parsed.get("revenue_growth", 0), parsed.get("profit_margins", 0),
+                        ]
+                        fundamentals_available = sum(1 for v in key_fields if v and float(v) != 0.0) >= 2
+                        break  # success — stop trying versions
+        except Exception:
+            continue
 
     # ── Price fields from meta ───────────────────────────────
     price = meta.get("regularMarketPrice", series[-1]["close"])
@@ -421,4 +434,5 @@ async def analyse(sym: str = ""):
 
         # Metadata
         "analysed_at": datetime.utcnow().isoformat() + "Z",
+        "fundamentals_available": fundamentals_available,
     })
