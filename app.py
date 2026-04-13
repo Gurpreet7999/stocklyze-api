@@ -17,6 +17,28 @@ from fastapi.middleware.cors import CORSMiddleware
 sys.path.append(os.path.dirname(__file__))
 import _utils as u
 
+# ── Numpy → Python type sanitiser ───────────────────────────
+def convert_numpy(obj):
+    """
+    Recursively convert all numpy scalar/bool types to native Python.
+    FastAPI's jsonable_encoder cannot serialise np.float64, np.bool_, etc.
+    Apply to the entire response dict before returning.
+    """
+    if isinstance(obj, dict):
+        return {k: convert_numpy(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_numpy(v) for v in obj]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
 # ── App setup ────────────────────────────────────────────────
 app = FastAPI(title="Stocklyze API", version="5.0")
 
@@ -323,7 +345,7 @@ async def analyse(sym: str = ""):
             pass
 
     # ── Assemble final response ──────────────────────────────
-    return {
+    return convert_numpy({
         # Identity
         "sym":       sym,
         "name":      fd.get("name") or sym,
@@ -399,4 +421,4 @@ async def analyse(sym: str = ""):
 
         # Metadata
         "analysed_at": datetime.utcnow().isoformat() + "Z",
-    }
+    })
