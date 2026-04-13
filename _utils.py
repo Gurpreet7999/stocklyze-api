@@ -193,99 +193,129 @@ def score_stock(fd, series):
     fd: fundamentals dict (sector, pe, revenue_growth, etc.)
     series: list of OHLCV dicts:
         [{"time": "YYYY-MM-DD", "open":..., "high":..., "low":..., "close":..., "volume":...}, ...]
+
+    Scoring is split into 4 layers (max points in parentheses):
+      L1 — Business fundamentals  (30)
+      L2 — Valuation              (25)
+      L3 — Technical momentum     (25)
+      L4 — Ownership / risk       (20)
+
+    When fundamentals are unavailable (all zeros), L1 and L2 are skipped
+    entirely so technicals-only scoring does not produce false verdicts.
     """
     closes = np.array([d["close"] for d in series], dtype=float)
-    highs = np.array([d["high"] for d in series], dtype=float)
-    lows = np.array([d["low"] for d in series], dtype=float)
-    cur = closes[-1] if len(closes) else 0
+    highs  = np.array([d["high"]  for d in series], dtype=float)
+    lows   = np.array([d["low"]   for d in series], dtype=float)
+    cur    = float(closes[-1]) if len(closes) else 0.0
 
-    ma50 = float(np.mean(closes[-50:])) if len(closes) >= 50 else cur
+    ma50  = float(np.mean(closes[-50:]))  if len(closes) >= 50  else cur
     ma200 = float(np.mean(closes[-200:])) if len(closes) >= 200 else cur
 
-    sector = fd.get("sector", "Technology")
-    spe = SECTOR_PE.get(sector, 22)
+    sector = fd.get("sector", "") or ""
+    spe    = SECTOR_PE.get(sector, 22)
 
-    rsi = calc_rsi(closes)
+    rsi  = calc_rsi(closes)
     macd = calc_macd(closes)
-    adx = calc_adx(highs, lows, closes)
-    bb = calc_bb(closes)
+    adx  = calc_adx(highs, lows, closes)
+    bb   = calc_bb(closes)
     stch = calc_stoch(highs, lows, closes)
-    ema20 = calc_ema(closes, 20)
-    ema50 = calc_ema(closes, 50)
+    ema20  = calc_ema(closes, 20)
+    ema50  = calc_ema(closes, 50)
     ema200 = calc_ema(closes, 200) if len(closes) >= 200 else ma200
 
     L1 = L2 = L3 = L4 = 0
     finds = []
 
-    # ─ Fundamentals
-    rg = safe(fd.get("revenue_growth", 0)) * 100
-    if rg > 15:
-        L1 += 8; finds.append({"t": "p", "tx": f"Strong revenue growth {rg:.1f}% YoY"})
-    elif rg > 8:
-        L1 += 5; finds.append({"t": "p", "tx": f"Healthy revenue growth {rg:.1f}% YoY"})
-    elif rg > 0:
-        L1 += 2
-    else:
-        finds.append({"t": "n", "tx": f"Revenue growth {rg:.1f}% — declining or stagnant"})
+    # ── Detect whether fundamentals are actually populated ─────
+    # We consider fundamentals "available" only if at least two of
+    # the key financial ratios are non-zero. If Yahoo Finance failed
+    # to return them, we skip L1/L2 entirely rather than score on zeros.
+    fundamental_fields = [
+        fd.get("pe", 0), fd.get("revenue_growth", 0),
+        fd.get("profit_margins", 0), fd.get("return_on_equity", 0),
+        fd.get("mc", 0),
+    ]
+    fd_available = sum(1 for v in fundamental_fields if v and float(v) != 0.0) >= 2
 
-    pm = safe(fd.get("profit_margins", 0)) * 100
-    if pm > 20:
-        L1 += 6; finds.append({"t": "p", "tx": f"Excellent net profit margin {pm:.1f}%"})
-    elif pm > 12:
-        L1 += 4
-    elif pm > 5:
-        L1 += 2
-    elif pm > 0:
-        L1 += 1
-    else:
-        finds.append({"t": "n", "tx": f"Negative profit margin {pm:.1f}%"})
+    if not fd_available:
+        finds.append({
+            "t": "n",
+            "tx": "Fundamental data unavailable — scoring based on technicals only"
+        })
 
-    roe_v = safe(fd.get("return_on_equity", 0)) * 100
-    if roe_v > 20:
-        L1 += 8; finds.append({"t": "p", "tx": f"Excellent ROE {roe_v:.1f}%"})
-    elif roe_v > 15:
-        L1 += 5; finds.append({"t": "p", "tx": f"Good ROE {roe_v:.1f}%"})
-    elif roe_v > 8:
-        L1 += 2
-    else:
-        finds.append({"t": "n", "tx": f"Weak ROE {roe_v:.1f}%"})
+    # ─ Layer 1: Business fundamentals (skip if data unavailable) ─
+    if fd_available:
+        rg = safe(fd.get("revenue_growth", 0)) * 100
+        if rg > 15:
+            L1 += 8; finds.append({"t": "p", "tx": f"Strong revenue growth {rg:.1f}% YoY"})
+        elif rg > 8:
+            L1 += 5; finds.append({"t": "p", "tx": f"Healthy revenue growth {rg:.1f}% YoY"})
+        elif rg > 0:
+            L1 += 2
+        else:
+            finds.append({"t": "n", "tx": f"Revenue growth {rg:.1f}% — declining or stagnant"})
 
-    de = safe(fd.get("debt_to_equity", 0)) / 100
-    if de < 0.3:
-        L1 += 4; finds.append({"t": "p", "tx": f"Very low Debt/Equity {de:.2f}"})
-    elif de < 1.0:
-        L1 += 2
-    elif de > 2.0:
-        finds.append({"t": "n", "tx": f"High Debt/Equity {de:.2f}"})
+        pm = safe(fd.get("profit_margins", 0)) * 100
+        if pm > 20:
+            L1 += 6; finds.append({"t": "p", "tx": f"Excellent net profit margin {pm:.1f}%"})
+        elif pm > 12:
+            L1 += 4
+        elif pm > 5:
+            L1 += 2
+        elif pm > 0:
+            L1 += 1
+        else:
+            finds.append({"t": "n", "tx": f"Negative profit margin {pm:.1f}%"})
 
-    eg = safe(fd.get("earnings_growth", 0)) * 100
-    if eg > 20:
-        L1 += 4; finds.append({"t": "p", "tx": f"Accelerating earnings growth {eg:.1f}%"})
-    elif eg > 10:
-        L1 += 2
-    elif eg < 0:
-        finds.append({"t": "n", "tx": f"Declining earnings {eg:.1f}%"})
+        roe_v = safe(fd.get("return_on_equity", 0)) * 100
+        if roe_v > 20:
+            L1 += 8; finds.append({"t": "p", "tx": f"Excellent ROE {roe_v:.1f}%"})
+        elif roe_v > 15:
+            L1 += 5; finds.append({"t": "p", "tx": f"Good ROE {roe_v:.1f}%"})
+        elif roe_v > 8:
+            L1 += 2
+        else:
+            finds.append({"t": "n", "tx": f"Weak ROE {roe_v:.1f}%"})
 
-    # ─ Valuation
-    pe = safe(fd.get("pe", 0))
-    if pe <= 0:
-        L2 += 10
-    elif pe < spe * 0.7:
-        L2 += 20; finds.append({"t": "p", "tx": f"Undervalued: P/E {pe:.1f}x vs sector {spe}x"})
-    elif pe < spe:
-        L2 += 14; finds.append({"t": "p", "tx": f"Fair valuation: P/E {pe:.1f}x below sector {spe}x"})
-    elif pe < spe * 1.3:
-        L2 += 8
-    else:
-        finds.append({"t": "n", "tx": f"Elevated P/E {pe:.1f}x vs sector avg {spe}x"})
+        de = safe(fd.get("debt_to_equity", 0)) / 100
+        if de < 0.3:
+            L1 += 4; finds.append({"t": "p", "tx": f"Very low Debt/Equity {de:.2f}"})
+        elif de < 1.0:
+            L1 += 2
+        elif de > 2.0:
+            finds.append({"t": "n", "tx": f"High Debt/Equity {de:.2f}"})
 
-    pb = safe(fd.get("pb", 0))
-    if 0 < pb < 2:
-        L2 += 5; finds.append({"t": "p", "tx": f"Reasonable P/B {pb:.1f}x"})
-    elif pb < 4:
-        L2 += 2
-    elif pb > 8:
-        finds.append({"t": "n", "tx": f"High P/B {pb:.1f}x"})
+        eg = safe(fd.get("earnings_growth", 0)) * 100
+        if eg > 20:
+            L1 += 4; finds.append({"t": "p", "tx": f"Accelerating earnings growth {eg:.1f}%"})
+        elif eg > 10:
+            L1 += 2
+        elif eg < 0:
+            finds.append({"t": "n", "tx": f"Declining earnings {eg:.1f}%"})
+
+    # ─ Layer 2: Valuation (skip if data unavailable) ─────────────
+    if fd_available:
+        pe = safe(fd.get("pe", 0))
+        # pe=0 genuinely means "no data" — do NOT award points for it
+        if pe > 0:
+            if pe < spe * 0.7:
+                L2 += 20; finds.append({"t": "p", "tx": f"Undervalued: P/E {pe:.1f}x vs sector {spe}x"})
+            elif pe < spe:
+                L2 += 14; finds.append({"t": "p", "tx": f"Fair valuation: P/E {pe:.1f}x below sector {spe}x"})
+            elif pe < spe * 1.3:
+                L2 += 8
+            else:
+                finds.append({"t": "n", "tx": f"Elevated P/E {pe:.1f}x vs sector avg {spe}x"})
+        # pe=0 → skip, neither reward nor penalise
+
+        pb = safe(fd.get("pb", 0))
+        if pb > 0:
+            if pb < 2:
+                L2 += 5; finds.append({"t": "p", "tx": f"Reasonable P/B {pb:.1f}x"})
+            elif pb < 4:
+                L2 += 2
+            elif pb > 8:
+                finds.append({"t": "n", "tx": f"High P/B {pb:.1f}x"})
 
     # ─ Technicals
     above_200 = cur > ma200
@@ -337,40 +367,85 @@ def score_stock(fd, series):
         finds.append({"t": "n", "tx": f"High beta {beta:.2f} — volatile stock"})
 
     score = min(100, L1 + L2 + L3 + L4)
-    if score >= 80:
-        verdict = "STRONG BUY"
-    elif score >= 65:
-        verdict = "BUY"
-    elif score >= 50:
-        verdict = "CAUTIOUS BUY"
-    elif score >= 35:
-        verdict = "HOLD"
-    elif score >= 20:
-        verdict = "REDUCE"
+
+    # ── Verdict thresholds ────────────────────────────────────
+    # When fundamentals are unavailable, max achievable score is 45
+    # (technicals 25 + institutional 20). Scale thresholds accordingly
+    # so we don't produce "AVOID" on a stock with strong technicals
+    # simply because Yahoo Finance didn't return fundamental data.
+    if fd_available:
+        # Full data — use standard thresholds
+        if score >= 80:   verdict = "STRONG BUY"
+        elif score >= 65: verdict = "BUY"
+        elif score >= 50: verdict = "CAUTIOUS BUY"
+        elif score >= 35: verdict = "HOLD"
+        elif score >= 20: verdict = "REDUCE"
+        else:             verdict = "AVOID"
     else:
-        verdict = "AVOID"
+        # Technicals-only — never give STRONG BUY or AVOID without fundamental support
+        if score >= 38:   verdict = "BUY"
+        elif score >= 28: verdict = "CAUTIOUS BUY"
+        elif score >= 18: verdict = "HOLD"
+        else:             verdict = "REDUCE"
 
     forecasts = []
-    if len(closes) >= 60:
+    if len(closes) >= 60 and cur > 0:
+        # ── Linear regression on last 60 trading days ──────────
         y = closes[-60:]
-        x = np.arange(len(y))
-        n = len(y)
+        x = np.arange(len(y), dtype=float)
+        n_pts = len(y)
         sx, sy = x.sum(), y.sum()
-        slope = (n * (x * y).sum() - sx * sy) / (n * (x ** 2).sum() - sx ** 2)
-        dd = slope / max(cur, 1) * 100
-        vol = (float(np.std(np.diff(closes[-30:]) / closes[-30:-1])) * math.sqrt(252)
-               if len(closes) > 30 else 0.02)
+        denom = n_pts * (x ** 2).sum() - sx ** 2
+        slope = ((n_pts * (x * y).sum() - sx * sy) / denom) if denom != 0 else 0.0
+
+        # Daily drift as % of current price — hard-capped at ±0.5% per day
+        # to prevent absurd projections from short-term noise.
+        # 0.5%/day annualises to ~130% — already an extreme bull/bear case.
+        dd_raw = float(slope) / cur * 100
+        dd = max(-0.5, min(0.5, dd_raw))
+
+        # Annualised volatility from last 30 days of daily returns
+        if len(closes) > 31:
+            daily_ret = np.diff(closes[-31:]) / closes[-31:-1]
+            # Clip daily returns to ±15% to exclude data errors (splits, etc.)
+            daily_ret = np.clip(daily_ret, -0.15, 0.15)
+            ann_vol = float(np.std(daily_ret)) * math.sqrt(252)
+            # Cap annualised vol at 80% — handles micro-caps / data anomalies
+            ann_vol = min(ann_vol, 0.80)
+        else:
+            ann_vol = 0.30  # default 30% vol if insufficient history
+
         for lbl, days in [("1 Month", 22), ("3 Months", 66),
                           ("6 Months", 130), ("12 Months", 252)]:
+            # Base = current price grown at linear drift for `days`
             base = cur * (1 + dd / 100 * days)
-            margin = vol * math.sqrt(days) * cur * 0.5
+
+            # Uncertainty band: period vol × 0.5 (one-sided 1σ approximation)
+            period_vol = ann_vol * math.sqrt(days / 252)
+            margin = cur * period_vol * 0.5
+
+            bull_p = base + margin
+            bear_p = base - margin
+
+            # Hard floor: no forecast can be below 10% of current price
+            # (protects against regression artefacts and data errors)
+            floor = cur * 0.10
+            base  = max(base,  floor)
+            bull_p = max(bull_p, floor)
+            bear_p = max(bear_p, floor)
+
+            # Sanity cap: no forecast above 5× current price for any period
+            ceil = cur * 5.0
+            base  = min(base,  ceil)
+            bull_p = min(bull_p, ceil)
+
             forecasts.append({
                 "period": lbl,
-                "days": days,
-                "base": round(base, 2),
-                "bull": round(base + margin, 2),
-                "bear": round(base - margin * 0.75, 2),
-                "chg": round((base - cur) / max(cur, 1) * 100, 2),
+                "days":   days,
+                "base":   round(base,   2),
+                "bull":   round(bull_p, 2),
+                "bear":   round(bear_p, 2),
+                "chg":    round((base - cur) / cur * 100, 2),
             })
 
     return {
