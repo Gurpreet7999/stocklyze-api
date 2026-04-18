@@ -1,20 +1,25 @@
 """
 Stocklyze — Railway backend entry point
 FastAPI + CORS + live Yahoo Finance + quant analysis engine
+Fundamentals: Yahoo Finance (primary) → Screener.in (fallback)
 """
 
 import os
+import re
 import sys
 import math
 from datetime import datetime
 
 import httpx
 import numpy as np
+import requests as sync_requests
+from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.append(os.path.dirname(__file__))
 import _utils as u
+
 
 # ── Numpy → native Python sanitiser ─────────────────────────
 def convert_numpy(obj):
@@ -33,8 +38,138 @@ def convert_numpy(obj):
     return obj
 
 
+# ── Screener.in scraper ──────────────────────────────────────
+_SCREENER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+def scrape_screener(symbol: str) -> dict:
+    """
+    Scrape key fundamental ratios from Screener.in.
+    Returns an empty dict on any failure — caller must treat this as optional.
+    All returned values are raw strings; use clean_number() before storing.
+    """
+    try:
+        url = f"https://www.screener.in/company/{symbol}/consolidated/"
+        r   = sync_requests.get(url, headers=_SCREENER_HEADERS, timeout=12)
+        if r.status_code == 404:
+            url = f"https://www.screener.in/company/{symbol}/"
+            r   = sync_requests.get(url, headers=_SCREENER_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return {}
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        def _get(label: str):
+            try:
+                for li in soup.find_all("li"):
+                    name_span = li.find("span", class_="name")
+                    val_span  = li.find("span", class_="number")
+                    if name_span and val_span:
+                        if label.lower() in name_span.get_text(strip=True).lower():
+                            return val_span.get_text(strip=True)
+                td = soup.find("td", string=re.compile(label, re.IGNORECASE))
+                if td:
+                    sibling = td.find_next_sibling("td")
+                    if sibling:
+                        return sibling.get_text(strip=True)
+            except Exception:
+                pass
+            return None
+
+        return {
+            "pe":  _get("Stock P/E"),
+            "mc":  _get("Market Cap"),
+            "roe": _get("Return on equity"),
+            "de":  _get("Debt to equity"),
+            "pm":  _get("Net profit"),
+            "rg":  _get("Sales growth"),
+            "pb":  _get("Price to Book"),
+        }
+
+    except Exception:
+        return {}
+
+
+def clean_number(val) -> float:
+    """Convert a Screener.in display value to a plain float."""
+    if not val:
+        return 0.0
+    val = (
+        str(val)
+        .replace(",", "")
+        .replace("Cr", "")
+        .replace("%", "")
+        .replace("₹", "")
+        .replace("Rs.", "")
+        .strip()
+    )
+    val = re.sub(r"[^\d.\-].*$", "", val)
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _apply_screener_fallback(fd: dict, symbol: str) -> tuple:
+    """
+    Fetch Screener.in data and fill ONLY fields that are missing/zero in fd.
+    Returns (updated_fd, data_source_label).
+    data_source is "mixed" only when at least one field was actually filled
+    from Screener; "yahoo" when Yahoo had everything.
+    """
+    scraped = scrape_screener(symbol)
+    if not scraped:
+        return fd, "yahoo"
+
+    filled = False
+
+    if not fd.get("pe"):
+        v = clean_number(scraped.get("pe"))
+        if v > 0:
+            fd["pe"] = v; filled = True
+
+    if not fd.get("mc"):
+        v = clean_number(scraped.get("mc"))
+        if v > 0:
+            fd["mc"] = v * 1e7; filled = True  # Screener Cr -> rupees
+
+    if not fd.get("return_on_equity"):
+        v = clean_number(scraped.get("roe"))
+        if v != 0:
+            fd["return_on_equity"] = v / 100.0; filled = True
+
+    if not fd.get("profit_margins"):
+        v = clean_number(scraped.get("pm"))
+        if v != 0:
+            fd["profit_margins"] = v / 100.0; filled = True
+
+    if not fd.get("revenue_growth"):
+        v = clean_number(scraped.get("rg"))
+        if v != 0:
+            fd["revenue_growth"] = v / 100.0; filled = True
+
+    if not fd.get("debt_to_equity"):
+        v = clean_number(scraped.get("de"))
+        if v != 0:
+            fd["debt_to_equity"] = v * 100.0; filled = True
+
+    if not fd.get("pb"):
+        v = clean_number(scraped.get("pb"))
+        if v > 0:
+            fd["pb"] = v; filled = True
+
+    return fd, ("mixed" if filled else "yahoo")
+
+
 # ── App ───────────────────────────────────────────────────────
-app = FastAPI(title="Stocklyze API", version="6.0")
+app = FastAPI(title="Stocklyze API", version="6.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,7 +195,7 @@ YF_HEADERS = {
 def health():
     return {
         "status":  "ok",
-        "service": "Stocklyze API v6",
+        "service": "Stocklyze API v6.1",
         "groq":    bool(os.environ.get("GROQ_API_KEY", "")),
         "ts":      datetime.utcnow().isoformat() + "Z",
     }
@@ -147,9 +282,9 @@ async def indices():
 
     if not out:
         out = [
-            {"name": "NIFTY 50",    "price": 22450, "change": 0, "pct": 0},
-            {"name": "SENSEX",      "price": 73900, "change": 0, "pct": 0},
-            {"name": "BANK NIFTY",  "price": 48200, "change": 0, "pct": 0},
+            {"name": "NIFTY 50",   "price": 22450, "change": 0, "pct": 0},
+            {"name": "SENSEX",     "price": 73900, "change": 0, "pct": 0},
+            {"name": "BANK NIFTY", "price": 48200, "change": 0, "pct": 0},
         ]
     return out
 
@@ -226,7 +361,7 @@ async def analyse(sym: str = ""):
     if not series:
         return {"error": f"No valid price data returned for '{sym}'."}
 
-    # ── Step 3: Fetch fundamentals ────────────────────────────
+    # ── Step 3: Fetch fundamentals (Yahoo primary) ────────────
     fd = {
         "name": meta.get("longName") or meta.get("shortName") or sym,
         "sector": "", "industry": "", "description": "", "exchange": "",
@@ -238,6 +373,7 @@ async def analyse(sym: str = ""):
         "target_price": 0, "analyst_count": 0,
     }
     fundamentals_available = False
+    data_source            = "yahoo"
 
     for qs_ver in ["v11", "v10"]:
         try:
@@ -264,15 +400,35 @@ async def analyse(sym: str = ""):
         except Exception:
             continue
 
+    # ── Step 3b: Screener.in fallback ─────────────────────────
+    # Fills ONLY fields that are still zero after Yahoo.
+    # If Yahoo returned full data, all conditions are false → no-op.
+    # scrape_screener() uses the synchronous `requests` library and runs
+    # in FastAPI's default thread pool — acceptable for a single analysis call.
+    try:
+        fd, data_source = _apply_screener_fallback(fd, sym)
+
+        # Re-evaluate after fallback enrichment
+        if not fundamentals_available:
+            enriched_fields = [
+                fd.get("pe", 0), fd.get("mc", 0),
+                fd.get("revenue_growth", 0), fd.get("profit_margins", 0),
+            ]
+            fundamentals_available = (
+                sum(1 for v in enriched_fields if v and float(v) != 0.0) >= 2
+            )
+    except Exception:
+        pass  # fallback failure is non-fatal
+
     # ── Step 4: Price fields ──────────────────────────────────
     price  = float(meta.get("regularMarketPrice", series[-1]["close"]))
     prev   = float(meta.get("chartPreviousClose", price))
     change = round(price - prev, 2)
     pct    = round((price - prev) / prev * 100, 2) if prev else 0.0
 
-    h52  = float(meta.get("fiftyTwoWeekHigh", price))
-    l52  = float(meta.get("fiftyTwoWeekLow",  price))
-    mc   = float(fd.get("mc", 0) or 0)
+    h52 = float(meta.get("fiftyTwoWeekHigh", price))
+    l52 = float(meta.get("fiftyTwoWeekLow",  price))
+    mc  = float(fd.get("mc", 0) or 0)
 
     def fmt_cap(v):
         if not v:
@@ -291,8 +447,7 @@ async def analyse(sym: str = ""):
         except Exception:
             pass
 
-    # Override fundamentals_available with engine's assessment
-    # (engine re-checks internally, use its result as source of truth)
+    # Engine re-assesses fundamentals internally — use its result
     fundamentals_available = analysis.get("fd_available", fundamentals_available)
 
     # ── Step 6: Groq AI summary (optional) ───────────────────
@@ -302,25 +457,24 @@ async def analyse(sym: str = ""):
         try:
             groq_payload = {
                 **fd,
-                "sym":         sym,
-                "price":       price,
-                "h52":         h52,
-                "l52":         l52,
-                "mc_fmt":      fmt_cap(mc),
-                "rg":          round(fd.get("revenue_growth",   0) * 100, 1),
-                "pm":          round(fd.get("profit_margins",   0) * 100, 1),
-                "roe":         round(fd.get("return_on_equity", 0) * 100, 1),
-                "inst":        round(fd.get("held_institutions",0) * 100, 1),
-                "beta":        fd.get("beta", 1.0),
-                "spe":         u.SECTOR_PE.get(fd.get("sector", ""), 22),
-                "pe":          fd.get("pe", 0),
-                # New engine fields for richer Groq prompt
-                "trend":       analysis.get("trend",       "—"),
-                "momentum":    analysis.get("momentum",    "—"),
-                "confidence":  analysis.get("confidence",  "—"),
-                "action_tag":  analysis.get("action_tag",  "—"),
-                "key_insights":analysis.get("key_insights", []),
-                "risk_flags":  analysis.get("risk_flags",  []),
+                "sym":          sym,
+                "price":        price,
+                "h52":          h52,
+                "l52":          l52,
+                "mc_fmt":       fmt_cap(mc),
+                "rg":           round(fd.get("revenue_growth",   0) * 100, 1),
+                "pm":           round(fd.get("profit_margins",   0) * 100, 1),
+                "roe":          round(fd.get("return_on_equity", 0) * 100, 1),
+                "inst":         round(fd.get("held_institutions",0) * 100, 1),
+                "beta":         fd.get("beta", 1.0),
+                "spe":          u.SECTOR_PE.get(fd.get("sector", ""), 22),
+                "pe":           fd.get("pe", 0),
+                "trend":        analysis.get("trend",        "—"),
+                "momentum":     analysis.get("momentum",     "—"),
+                "confidence":   analysis.get("confidence",   "—"),
+                "action_tag":   analysis.get("action_tag",   "—"),
+                "key_insights": analysis.get("key_insights", []),
+                "risk_flags":   analysis.get("risk_flags",   []),
             }
             groq_text = u.groq_analysis(groq_payload)
         except Exception:
@@ -370,6 +524,7 @@ async def analyse(sym: str = ""):
         "target_price": round(float(fd.get("target_price",     0)), 2),
         "analyst_count":int(fd.get("analyst_count", 0)),
         "fundamentals_available": bool(fundamentals_available),
+        "data_source":            data_source,
 
         # ── Chart series ──────────────────────────────────────
         "series": series,
