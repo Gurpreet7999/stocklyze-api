@@ -1,6 +1,5 @@
 fastapi
-uvicorn[standard]
+uvicorn
 httpx
-requests
 numpy
-pandas
+requests
