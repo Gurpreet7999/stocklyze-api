@@ -130,7 +130,7 @@ def _apply_screener_fallback(fd: dict, symbol: str) -> tuple:
 
     filled = False
 
-    if not fd.get("pe"):
+    if fd.get("pe") is None:
         v = clean_number(scraped.get("pe"))
         if v > 0:
             fd["pe"] = v; filled = True
@@ -411,7 +411,7 @@ async def analyse(sym: str = ""):
         # Re-evaluate after fallback enrichment
         if not fundamentals_available:
             enriched_fields = [
-                fd.get("pe", 0), fd.get("mc", 0),
+                fd.get("pe"), fd.get("mc", 0),
                 fd.get("revenue_growth", 0), fd.get("profit_margins", 0),
             ]
             fundamentals_available = (
@@ -468,7 +468,7 @@ async def analyse(sym: str = ""):
                 "inst":         round(fd.get("held_institutions",0) * 100, 1),
                 "beta":         fd.get("beta", 1.0),
                 "spe":          u.SECTOR_PE.get(fd.get("sector", ""), 22),
-                "pe":           fd.get("pe", 0),
+                "pe":           fd.get("pe"),
                 "trend":        analysis.get("trend",        "—"),
                 "momentum":     analysis.get("momentum",     "—"),
                 "confidence":   analysis.get("confidence",   "—"),
