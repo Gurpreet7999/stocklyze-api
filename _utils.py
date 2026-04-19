@@ -27,13 +27,18 @@ SECTOR_PE = {
 #  UTILITIES
 # ═════════════════════════════════════════════════════════════
 
-def safe(v, d=0.0):
-    """Return float(v) or d if v is NaN/Inf/unconvertible."""
+def safe(v, d=None):
+    if v is None:
+        return d
     try:
         f = float(v)
         return d if (math.isnan(f) or math.isinf(f)) else f
     except Exception:
         return d
+
+def safef(v, d=0.0):
+    result = safe(v, d=d)
+    return result if result is not None else d
 
 
 def _parse_fundamentals(r):
@@ -48,12 +53,19 @@ def _parse_fundamentals(r):
     pr  = r.get("price",                {}) or {}
 
     def g(d, k):
-        v = d.get(k)
-        if v is None:
-            return 0.0
-        if isinstance(v, dict):
-            return safe(v.get("raw", 0))
-        return safe(v)
+    v = d.get(k)
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        raw = v.get("raw")
+        if raw is None:
+            return None
+        return safe(raw)
+    return safe(v)
+
+def gf(d, k, fallback=0.0):
+    result = g(d, k)
+    return result if result is not None else fallback
 
     return {
         "name":             pr.get("longName") or pr.get("shortName", ""),
